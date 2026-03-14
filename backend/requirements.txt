@@ -1,0 +1,14 @@
+fastapi
+uvicorn[standard]
+opencv-python
+mediapipe
+numpy
+pydantic
+python-multipart
+scipy
+redis
+rq
+httpx
+python-jose[cryptography]
+passlib
+Pillow
