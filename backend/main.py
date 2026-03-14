@@ -86,6 +86,54 @@ app.add_middleware(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Payload Size Limit Middleware — Prevent Abuse / DoS
+# Base64-encoded 6MP image ≈ 8MB. Hard cap at 10MB to leave headroom.
+# ──────────────────────────────────────────────────────────────────────────────
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import Response as StarletteResponse
+
+MAX_PAYLOAD_BYTES = 10 * 1024 * 1024  # 10 MB
+
+class PayloadSizeLimitMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        content_length = request.headers.get("content-length")
+        if content_length and int(content_length) > MAX_PAYLOAD_BYTES:
+            return JSONResponse(
+                status_code=413,
+                content={
+                    "error": "PAYLOAD_TOO_LARGE",
+                    "message": f"Request body exceeds 10MB limit. Received: {int(content_length) // (1024*1024)}MB.",
+                    "maxBytes": MAX_PAYLOAD_BYTES,
+                }
+            )
+        return await call_next(request)
+
+app.add_middleware(PayloadSizeLimitMiddleware)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Security Headers Middleware
+# HSTS, CSP, X-Frame-Options, Referrer-Policy, X-Content-Type-Options
+# ──────────────────────────────────────────────────────────────────────────────
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"]  = "nosniff"
+        response.headers["X-Frame-Options"]          = "DENY"
+        response.headers["Referrer-Policy"]          = "strict-origin-when-cross-origin"
+        response.headers["Permissions-Policy"]       = "camera=(), microphone=(), geolocation=()"
+        response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains; preload"
+        response.headers["Content-Security-Policy"]  = (
+            "default-src 'none'; "
+            "frame-ancestors 'none';"
+        )
+        return response
+
+app.add_middleware(SecurityHeadersMiddleware)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Request ID Middleware — Audit Trail
 # Every HTTP request gets a unique UUID for tracing through logs
 # ──────────────────────────────────────────────────────────────────────────────
@@ -355,25 +403,23 @@ async def scan_body(
     check_rate_limit(brand_id, action="body_scan")
     require_capability(brand_id, "body_scan_enabled")
 
-    from body_scan import scan_body_from_photo, estimate_from_height
+    from body_scan import scan_body_from_photo
 
     logger.info(f"[BODY_SCAN] brand='{brand_id}' height={req.heightCm}cm weight={req.weightKg}kg")
 
-    if req.photo:
-        measurements = await scan_body_from_photo(
-            photo_b64=req.photo,
-            height_cm=req.heightCm,
-            gender=req.gender or "neutral",
-            weight_kg=req.weightKg,
-            age_group=req.ageGroup,
+    if not req.photo:
+         raise HTTPException(
+            status_code=400,
+            detail={"error": ErrorCode.VALIDATION, "message": "A user photo is strictly required for precision SAM3D body scanning. Ratio estimation has been deprecated."}
         )
-    else:
-        measurements = estimate_from_height(
-            height_cm=req.heightCm,
-            gender=req.gender or "neutral",
-            weight_kg=req.weightKg,
-            age_group=req.ageGroup,
-        )
+
+    measurements = await scan_body_from_photo(
+        photo_b64=req.photo,
+        height_cm=req.heightCm,
+        gender=req.gender or "neutral",
+        weight_kg=req.weightKg,
+        age_group=req.ageGroup,
+    )
 
     return BodyScanResponse(
         status="success",
