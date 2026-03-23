@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 450" width="400" height="450">
+  <!-- T-Shirt shape -->
+  <path d="
+    M 120 0
+    L 80 10
+    L 0 70
+    L 40 120
+    L 80 90
+    L 80 440
+    L 320 440
+    L 320 90
+    L 360 120
+    L 400 70
+    L 320 10
+    L 280 0
+    Q 250 50 200 50
+    Q 150 50 120 0
+    Z
+  " fill="#3B82F6" stroke="#2563EB" stroke-width="2"/>
+  <!-- Neckline detail -->
+  <path d="
+    M 120 0
+    Q 150 50 200 50
+    Q 250 50 280 0
+  " fill="none" stroke="#1D4ED8" stroke-width="3"/>
+  <!-- Subtle shadow/fold lines -->
+  <line x1="200" y1="60" x2="200" y2="430" stroke="#2563EB" stroke-width="1" opacity="0.3"/>
+  <line x1="130" y1="100" x2="140" y2="400" stroke="#2563EB" stroke-width="1" opacity="0.2"/>
+  <line x1="270" y1="100" x2="260" y2="400" stroke="#2563EB" stroke-width="1" opacity="0.2"/>
+</svg>

@@ -1,0 +1,10 @@
+# Cloudflare Pages — AI-Kart Demo
+
+name = "aikart-demo"
+pages_build_output_dir = "public"
+compatibility_date = "2026-01-01"
+
+# Custom domain: demo.aikart.com
+# Configure via Cloudflare dashboard:
+#   Pages → aikart-demo → Custom domains → Add domain → demo.aikart.com
+# Then add DNS CNAME:  demo.aikart.com → aikart-demo.pages.dev

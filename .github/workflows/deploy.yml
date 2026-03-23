@@ -1,0 +1,49 @@
+name: Deploy AI-Kart Demo to Cloudflare Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build-and-deploy:
+    name: Build SDK & Deploy
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      deployments: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: aikart-app/package-lock.json
+
+      - name: Install dependencies
+        working-directory: aikart-app
+        run: npm ci
+
+      - name: Build SDK bundle
+        working-directory: aikart-app
+        run: npm run build:sdk
+
+      - name: Prepare deploy directory
+        working-directory: aikart-app
+        run: |
+          mkdir -p public/sdk/v1
+          cp dist/aikart.v1.min.js    public/sdk/v1/aikart.min.js
+          cp dist/aikart.v1.min.js.map public/sdk/v1/aikart.min.js.map
+          echo "SDK files staged for deployment:"
+          ls -la public/sdk/v1/
+
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy aikart-app/public --project-name aikart-demo

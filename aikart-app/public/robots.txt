@@ -1,0 +1,5 @@
+User-agent: *
+Allow: /
+Disallow: /sdk/
+
+Sitemap: https://demo.aikart.com/sitemap.xml

@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>AI-Kart Render Test</title>
+  <style>
+    body { background: #111; color: white; font-family: monospace; }
+    canvas { border: 2px solid #333; display: block; margin: 10px; }
+    .test { display: flex; align-items: flex-start; gap: 20px; margin: 20px; }
+    .result { padding: 10px; border-radius: 4px; margin: 5px 0; }
+    .pass { background: #1a4a1a; color: #4afa4a; }
+    .fail { background: #4a1a1a; color: #fa4a4a; }
+    .info { background: #1a1a4a; color: #4a9afa; }
+  </style>
+</head>
+<body>
+  <h2>AI-Kart WebGL Render Test</h2>
+  <div class="test">
+    <div>
+      <p>WebGL Output (should show garment, NO checkerboard):</p>
+      <canvas id="testCanvas" width="640" height="480"></canvas>
+    </div>
+    <div id="results" style="min-width:300px">
+      <p>Running tests...</p>
+    </div>
+  </div>
+  
+  <script>
+    const results = document.getElementById('results');
+    const log = (msg, type='info') => {
+      const d = document.createElement('div');
+      d.className = `result ${type}`;
+      d.textContent = msg;
+      results.appendChild(d);
+      console.log(msg);
+    };
+
+    async function runTests() {
+      results.innerHTML = '';
+      const canvas = document.getElementById('testCanvas');
+      
+      // ── TEST 1: WebGL2 Context ──────────────────────────
+      const gl = canvas.getContext('webgl2', {
+        alpha: true,
+        premultipliedAlpha: false,
+        antialias: false
+      });
+      
+      if (!gl) {
+        log('❌ TEST 1 FAIL: WebGL2 not available', 'fail');
+        return;
+      }
+      log('✅ TEST 1 PASS: WebGL2 context created', 'pass');
+      
+      // ── TEST 2: Clear to transparent ───────────────────
+      gl.clearColor(0, 0, 0, 0);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+      
+      // Read back a pixel — should be fully transparent
+      const clearPixel = new Uint8Array(4);
+      gl.readPixels(320, 240, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, clearPixel);
+      
+      if (clearPixel[3] !== 0) {
+        log(`❌ TEST 2 FAIL: Clear not transparent. Alpha=${clearPixel[3]}`, 'fail');
+      } else {
+        log('✅ TEST 2 PASS: Clear produces transparent canvas', 'pass');
+      }
+      
+      // ── TEST 3: Load garment texture ───────────────────
+      log('⏳ TEST 3: Loading garment texture...', 'info');
+      
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      
+      // Use white tshirt — simplest alpha
+      img.src = '/garments/canonical/tshirt_white.png';
+      
+      await new Promise((resolve, reject) => {
+        img.onload = resolve;
+        img.onerror = () => reject(new Error('Failed to load garment image'));
+        setTimeout(() => reject(new Error('Timeout loading image')), 5000);
+      }).catch(e => {
+        log(`❌ TEST 3 FAIL: ${e.message}`, 'fail');
+        log('   Check that /garments/canonical/tshirt_white.png exists', 'fail');
+        return null;
+      });
+      
+      if (!img.complete || !img.naturalWidth) return;
+      log(`✅ TEST 3 PASS: Garment loaded ${img.naturalWidth}×${img.naturalHeight}`, 'pass');
+      
+      // ── TEST 4: Check garment has correct alpha ─────────
+      const offscreen = document.createElement('canvas');
+      offscreen.width = img.naturalWidth;
+      offscreen.height = img.naturalHeight;
+      const ctx2d = offscreen.getContext('2d');
+      ctx2d.drawImage(img, 0, 0);
+      
+      const cx = Math.floor(img.naturalWidth / 2);
+      const cy = Math.floor(img.naturalHeight / 2);
+      const centerPx = ctx2d.getImageData(cx, cy, 1, 1).data;
+      const cornerPx = ctx2d.getImageData(2, 2, 1, 1).data;
+      
+      log(`   Center pixel RGBA: ${centerPx[0]},${centerPx[1]},${centerPx[2]},${centerPx[3]}`, 'info');
+      log(`   Corner pixel RGBA: ${cornerPx[0]},${cornerPx[1]},${cornerPx[2]},${cornerPx[3]}`, 'info');
+      
+      if (centerPx[3] < 200) {
+        log(`❌ TEST 4 FAIL: Garment body is transparent! Alpha=${centerPx[3]}`, 'fail');
+        log('   BackgroundRemover is eating the garment', 'fail');
+        log('   FIX: Reduce threshold in BackgroundRemover.ts to 15', 'fail');
+      } else {
+        log(`✅ TEST 4 PASS: Garment body opaque. Alpha=${centerPx[3]}`, 'pass');
+      }
+      
+      if (cornerPx[3] > 50) {
+        log(`⚠️  TEST 4b WARN: Corner not transparent. Alpha=${cornerPx[3]}`, 'fail');
+        log('   Background removal may not be working', 'fail');
+      } else {
+        log(`✅ TEST 4b PASS: Background removed. Corner Alpha=${cornerPx[3]}`, 'pass');
+      }
+      
+      // ── TEST 5: Upload to WebGL and read back ──────────
+      const texture = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, texture);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, offscreen);
+      
+      const texErr = gl.getError();
+      if (texErr !== gl.NO_ERROR) {
+        log(`❌ TEST 5 FAIL: Texture upload error: ${texErr}`, 'fail');
+      } else {
+        log('✅ TEST 5 PASS: Texture uploaded to GPU', 'pass');
+      }
+      
+      // ── TEST 6: Render a full-screen quad ──────────────
+      // Simple vertex + fragment shader — just draw the texture
+      const vsSource = `#version 300 es
+        in vec2 a_pos;
+        in vec2 a_uv;
+        out vec2 v_uv;
+        void main() {
+          v_uv = vec2(a_uv.x, 1.0 - a_uv.y);
+          gl_Position = vec4(a_pos, 0.0, 1.0);
+        }
+      `;
+      
+      const fsSource = `#version 300 es
+        precision mediump float;
+        uniform sampler2D u_tex;
+        in vec2 v_uv;
+        out vec4 fragColor;
+        void main() {
+          vec4 c = texture(u_tex, clamp(v_uv, vec2(0.001), vec2(0.999)));
+          if (c.a < 0.01) discard;
+          fragColor = vec4(c.rgb, c.a);
+        }
+      `;
+      
+      const vs = gl.createShader(gl.VERTEX_SHADER);
+      gl.shaderSource(vs, vsSource);
+      gl.compileShader(vs);
+      if (!gl.getShaderParameter(vs, gl.COMPILE_STATUS)) {
+        log(`❌ TEST 6 FAIL: Vertex shader: ${gl.getShaderInfoLog(vs)}`, 'fail');
+        return;
+      }
+      
+      const fs = gl.createShader(gl.FRAGMENT_SHADER);
+      gl.shaderSource(fs, fsSource);
+      gl.compileShader(fs);
+      if (!gl.getShaderParameter(fs, gl.COMPILE_STATUS)) {
+        log(`❌ TEST 6 FAIL: Fragment shader: ${gl.getShaderInfoLog(fs)}`, 'fail');
+        return;
+      }
+      
+      const prog = gl.createProgram();
+      gl.attachShader(prog, vs);
+      gl.attachShader(prog, fs);
+      gl.linkProgram(prog);
+      if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+        log(`❌ TEST 6 FAIL: Link error: ${gl.getProgramInfoLog(prog)}`, 'fail');
+        return;
+      }
+      log('✅ TEST 6 PASS: Shaders compiled and linked', 'pass');
+      
+      // Draw full screen quad
+      const positions = new Float32Array([
+        -1,-1, 0,0,   1,-1, 1,0,   -1,1, 0,1,
+         1,-1, 1,0,   1, 1, 1,1,   -1,1, 0,1
+      ]);
+      
+      const vao = gl.createVertexArray();
+      gl.bindVertexArray(vao);
+      const buf = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+      gl.bufferData(gl.ARRAY_BUFFER, positions, gl.STATIC_DRAW);
+      
+      gl.useProgram(prog);
+      const aPos = gl.getAttribLocation(prog, 'a_pos');
+      const aUV = gl.getAttribLocation(prog, 'a_uv');
+      gl.enableVertexAttribArray(aPos);
+      gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 16, 0);
+      gl.enableVertexAttribArray(aUV);
+      gl.vertexAttribPointer(aUV, 2, gl.FLOAT, false, 16, 8);
+      
+      gl.enable(gl.BLEND);
+      gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+      
+      gl.viewport(0, 0, 640, 480);
+      gl.clearColor(0, 0, 0, 0);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+      
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, texture);
+      gl.uniform1i(gl.getUniformLocation(prog, 'u_tex'), 0);
+      
+      gl.drawArrays(gl.TRIANGLES, 0, 6);
+      
+      const glErr = gl.getError();
+      if (glErr !== gl.NO_ERROR) {
+        log(`❌ TEST 6b FAIL: Draw error: ${glErr}`, 'fail');
+      }
+      
+      // ── TEST 7: Read back rendered pixels ──────────────
+      const centerRendered = new Uint8Array(4);
+      gl.readPixels(320, 240, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, centerRendered);
+      
+      log(`   Rendered center RGBA: ${centerRendered[0]},${centerRendered[1]},${centerRendered[2]},${centerRendered[3]}`, 'info');
+      
+      if (centerRendered[3] < 200) {
+        log(`❌ TEST 7 FAIL: Rendered output is transparent! Alpha=${centerRendered[3]}`, 'fail');
+        log('   The garment is not rendering opaque pixels', 'fail');
+        log('   Root cause: fragment shader discarding too many pixels', 'fail');
+      } else {
+        log(`✅ TEST 7 PASS: Rendered output is opaque. Alpha=${centerRendered[3]}`, 'pass');
+      }
+      
+      // ── TEST 8: Composite onto 2D canvas ───────────────
+      const testCanvas2D = document.createElement('canvas');
+      testCanvas2D.width = 640;
+      testCanvas2D.height = 480;
+      const ctx = testCanvas2D.getContext('2d');
+      
+      // Draw fake camera background (gray)
+      ctx.fillStyle = '#888';
+      ctx.fillRect(0, 0, 640, 480);
+      
+      // Composite WebGL result on top
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.drawImage(canvas, 0, 0);
+      
+      // Read composited center pixel
+      const composited = ctx.getImageData(320, 240, 1, 1).data;
+      log(`   Composited RGBA: ${composited[0]},${composited[1]},${composited[2]},${composited[3]}`, 'info');
+      
+      // If compositing worked, color should NOT be pure gray (#888 = 136,136,136)
+      const isGray = composited[0] > 120 && composited[0] < 150 && composited[1] > 120;
+      if (isGray) {
+        log('❌ TEST 8 FAIL: Compositing failed — only camera background visible', 'fail');
+        log('   WebGL canvas is fully transparent after render', 'fail');
+      } else {
+        log('✅ TEST 8 PASS: Garment composited over background', 'pass');
+      }
+      
+      // ── FINAL SUMMARY ───────────────────────────────────
+      log('', 'info');
+      log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━', 'info');
+      const failCount = results.querySelectorAll('.fail').length;
+      if (failCount === 0) {
+        log('🎉 ALL TESTS PASSED — Safe to test with camera', 'pass');
+      } else {
+        log(`🔴 ${failCount} TESTS FAILED — Fix before camera testing`, 'fail');
+        log('Do NOT report as fixed until this page shows all green', 'fail');
+      }
+    }
+    
+    runTests().catch(e => {
+      log(`💥 FATAL: ${e.message}`, 'fail');
+      console.error(e);
+    });
+  </script>
+</body>
+</html>

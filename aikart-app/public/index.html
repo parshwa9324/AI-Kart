@@ -1,0 +1,615 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AI-Kart — AR Try-On Demo</title>
+    <meta
+      name="description"
+      content="Try on clothes in real time using your camera. AI-powered AR garment overlay — no downloads required."
+    />
+
+    <!-- ── Open Graph / Twitter Cards ── -->
+    <meta property="og:title" content="AI-Kart — Virtual Try-On for Retail" />
+    <meta property="og:description" content="Real-time AR garment try-on in your browser. No app. No server. Zero data collection." />
+    <meta property="og:image" content="https://demo.aikart.com/og-image.png" />
+    <meta property="og:url" content="https://demo.aikart.com" />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="AI-Kart — Virtual Try-On for Retail" />
+    <meta name="twitter:description" content="Real-time AR garment try-on in your browser. No app. No server. Zero data collection." />
+    <meta name="twitter:image" content="https://demo.aikart.com/og-image.png" />
+
+    <link rel="preconnect" href="https://us.i.posthog.com" crossorigin />
+    <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <script>
+      !(function (t, e) {
+        var o, n, p, r;
+        e.__SV ||
+          ((window.posthog = e),
+          (e._i = []),
+          (e.init = function (i, s, a) {
+            function g(t, e) {
+              var o = e.split(".");
+              (2 == o.length && ((t = t[o[0]]), (e = o[1])),
+                (t[e] = function () {
+                  t.push([e].concat(Array.prototype.slice.call(arguments, 0)));
+                }));
+            }
+            (((p = t.createElement("script")).type = "text/javascript"),
+              (p.async = !0),
+              (p.src = s.api_host + "/static/array.js"),
+              (r = t.getElementsByTagName("script")[0]).parentNode.insertBefore(
+                p,
+                r,
+              ));
+            var u = e;
+            for (
+              void 0 !== a ? (u = e[a] = []) : (a = "posthog"),
+                u.people = u.people || [],
+                u.toString = function (t) {
+                  var e = "posthog";
+                  return (
+                    "posthog" !== a && (e += "." + a),
+                    t || (e += " (stub)"),
+                    e
+                  );
+                },
+                u.people.toString = function () {
+                  return u.toString(1) + ".people (stub)";
+                },
+                o =
+                  "capture identify alias people.set people.set_once set_config register register_once unregister opt_out_capturing has_opted_out_capturing opt_in_capturing reset isFeatureEnabled onFeatureFlags getFeatureFlag getFeatureFlagPayload reloadFeatureFlags group updateEarlyAccessFeatureEnrollment getEarlyAccessFeatures getActiveMatchingSurveys getSurveys onSessionId".split(
+                    " ",
+                  ),
+                n = 0;
+              n < o.length;
+              n++
+            )
+              g(u, o[n]);
+            e._i.push([i, s, a]);
+          }),
+          (e.__SV = 1));
+      })(document, window.posthog || []);
+
+      posthog.init("POSTHOG_KEY_HERE", {
+        api_host: "https://us.i.posthog.com",
+        person_profiles: "identified_only",
+        capture_pageview: true,
+        capture_pageleave: true,
+        autocapture: false, // manual events only
+        disable_session_recording: true, // no camera/screen data
+      });
+    </script>
+
+    <!-- ── AI-Kart SDK (built bundle) ── -->
+    <script src="/sdk/v1/aikart.min.js"></script>
+
+    <style>
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+
+      :root {
+        --bg: #0a0a0f;
+        --surface: #111118;
+        --border: #1e1e2e;
+        --text: #f1f5f9;
+        --muted: #64748b;
+        --accent: #6366f1;
+        --accent-glow: rgba(99, 102, 241, 0.3);
+      }
+
+      body {
+        background: var(--bg);
+        color: var(--text);
+        font-family:
+          -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+          "Helvetica Neue", Arial, sans-serif;
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+      }
+
+      /* ── Header ── */
+      .header {
+        width: 100%;
+        padding: 16px 24px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        border-bottom: 1px solid var(--border);
+      }
+      .logo {
+        font-size: 20px;
+        font-weight: 800;
+        letter-spacing: 3px;
+        background: linear-gradient(135deg, #6366f1, #a855f7, #ec4899);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+      }
+      .badge {
+        font-size: 11px;
+        background: rgba(99, 102, 241, 0.15);
+        color: #a78bfa;
+        padding: 4px 10px;
+        border-radius: 20px;
+        font-weight: 600;
+      }
+
+      /* ── Main Layout ── */
+      .main {
+        flex: 1;
+        width: 100%;
+        max-width: 1100px;
+        display: grid;
+        grid-template-columns: 1fr 300px;
+        gap: 24px;
+        padding: 24px;
+      }
+      @media (max-width: 768px) {
+        .main {
+          grid-template-columns: 1fr;
+          padding: 12px;
+          gap: 12px;
+        }
+        .ar-wrap {
+          aspect-ratio: auto;
+          max-height: 360px;
+          width: 100%;
+        }
+        .garment-grid {
+          display: flex;
+          overflow-x: auto;
+          -webkit-overflow-scrolling: touch;
+          gap: 8px;
+          padding-bottom: 4px;
+          scroll-snap-type: x mandatory;
+        }
+        .garment-item {
+          flex: 0 0 100px;
+          aspect-ratio: 1;
+          scroll-snap-align: center;
+        }
+        .stats-card {
+          display: none;
+        }
+      }
+
+      /* ── AR Container ── */
+      .ar-wrap {
+        position: relative;
+        aspect-ratio: 4/3;
+        background: var(--surface);
+        border-radius: 16px;
+        border: 1px solid var(--border);
+        overflow: hidden;
+      }
+
+      /* ── Sidebar ── */
+      .sidebar {
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+      }
+
+      .card {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 16px;
+      }
+      .card-title {
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        margin-bottom: 12px;
+      }
+
+      /* ── Garment Grid ── */
+      .garment-grid {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 8px;
+      }
+      .garment-item {
+        position: relative;
+        aspect-ratio: 1;
+        background: #1a1a2e;
+        border: 2px solid transparent;
+        border-radius: 10px;
+        cursor: pointer;
+        transition:
+          border-color 0.2s,
+          transform 0.15s;
+        overflow: hidden;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .garment-item:hover {
+        border-color: rgba(99, 102, 241, 0.4);
+        transform: scale(1.03);
+      }
+      .garment-item.active {
+        border-color: var(--accent);
+        box-shadow: 0 0 12px var(--accent-glow);
+      }
+      .garment-item img {
+        width: 80%;
+        height: 80%;
+        object-fit: contain;
+      }
+      .garment-label {
+        position: absolute;
+        bottom: 4px;
+        left: 0;
+        right: 0;
+        text-align: center;
+        font-size: 10px;
+        color: var(--muted);
+        font-weight: 500;
+      }
+
+      /* ── Stats ── */
+      .stats {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .stat-row {
+        display: flex;
+        justify-content: space-between;
+        font-size: 13px;
+      }
+      .stat-label {
+        color: var(--muted);
+      }
+      .stat-value {
+        font-weight: 600;
+        font-variant-numeric: tabular-nums;
+      }
+
+      /* ── CTA ── */
+      .cta-btn {
+        width: 100%;
+        padding: 14px;
+        border: none;
+        border-radius: 12px;
+        background: linear-gradient(135deg, #6366f1, #a855f7);
+        color: #fff;
+        font-size: 15px;
+        font-weight: 600;
+        cursor: pointer;
+        transition:
+          transform 0.15s,
+          box-shadow 0.15s;
+        box-shadow: 0 2px 12px var(--accent-glow);
+      }
+      .cta-btn:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 4px 20px var(--accent-glow);
+      }
+      .cta-btn:active {
+        transform: translateY(0);
+      }
+
+      /* ── Footer ── */
+      .footer {
+        width: 100%;
+        padding: 16px 24px;
+        border-top: 1px solid var(--border);
+        text-align: center;
+        font-size: 12px;
+        color: var(--muted);
+      }
+
+      /* ── Fallback Message ── */
+      .fallback-msg {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 12px;
+        padding: 32px 24px;
+        text-align: center;
+        min-height: 200px;
+      }
+      .fallback-icon {
+        width: 48px; height: 48px; border-radius: 50%;
+        background: rgba(234, 179, 8, 0.12);
+        display: flex; align-items: center; justify-content: center;
+        font-size: 24px;
+      }
+      .fallback-title {
+        font-size: 16px; font-weight: 600; color: #fbbf24;
+      }
+      .fallback-text {
+        font-size: 13px; color: var(--muted); max-width: 280px; line-height: 1.5;
+      }
+    </style>
+  </head>
+  <body>
+    <!-- Header -->
+    <header class="header">
+      <div class="logo">AI-KART</div>
+      <span class="badge">DEMO v1.0</span>
+    </header>
+
+    <!-- Main -->
+    <main class="main">
+      <!-- AR Viewport -->
+      <div class="ar-wrap" id="ar-container"></div>
+
+      <!-- Sidebar -->
+      <aside class="sidebar">
+        <!-- Garment Picker -->
+        <div class="card">
+          <div class="card-title">Garments</div>
+          <div class="garment-grid" id="garment-grid"></div>
+        </div>
+
+        <!-- Live Stats (hidden on mobile via CSS) -->
+        <div class="card stats-card">
+          <div class="card-title">Performance</div>
+          <div class="stats" id="stats">
+            <div class="stat-row">
+              <span class="stat-label">FPS</span>
+              <span class="stat-value" id="stat-fps">—</span>
+            </div>
+            <div class="stat-row">
+              <span class="stat-label">Session</span>
+              <span class="stat-value" id="stat-session">0s</span>
+            </div>
+            <div class="stat-row">
+              <span class="stat-label">Garment</span>
+              <span class="stat-value" id="stat-garment">—</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- CTA -->
+        <button class="cta-btn" id="cta-btn">🚀 Get Early Access</button>
+      </aside>
+    </main>
+
+    <footer class="footer">
+      Your video is processed locally. No camera data leaves your device.
+    </footer>
+
+    <script>
+      // ── Garment Catalog ──
+      const GARMENTS = [
+        {
+          id: "tshirt_white",
+          label: "White Tee",
+          imageUrl: "/garments/canonical/tshirt_white.png",
+        },
+        {
+          id: "tshirt_black_long",
+          label: "Black Long Sleeve",
+          imageUrl: "/garments/canonical/tshirt_black_long.png",
+        },
+        {
+          id: "hoodie_white",
+          label: "White Hoodie",
+          imageUrl: "/garments/canonical/hoodie_white.png",
+        },
+        {
+          id: "sweater_white",
+          label: "White Sweater",
+          imageUrl: "/garments/canonical/sweater_white.png",
+        },
+        {
+          id: "jacket_black",
+          label: "Black Jacket",
+          imageUrl: "/garments/canonical/jacket_black.png",
+        },
+        {
+          id: "tee_short_white",
+          label: "Short Tee",
+          imageUrl: "/garments/canonical/tee_short_white.png",
+        },
+      ];
+
+      // ── State ──
+      let aikartInstance = null;
+      let sessionStartTime = null;
+      let garmentViewStartTime = null;
+      let heartbeatInterval = null;
+      let statsInterval = null;
+
+      // ── PostHog: Page View ──
+      posthog.capture("demo_page_viewed", {
+        referrer: document.referrer,
+        userAgent: navigator.userAgent,
+      });
+
+      // ── Build Garment Grid UI ──
+      const grid = document.getElementById("garment-grid");
+      GARMENTS.forEach((g) => {
+        const el = document.createElement("div");
+        el.className = "garment-item";
+        el.dataset.id = g.id;
+        el.innerHTML = `
+        <img src="${g.imageUrl}" alt="${g.label}" loading="lazy" />
+        <div class="garment-label">${g.label}</div>
+      `;
+        // Click + touch support
+        el.addEventListener('click', () => switchGarment(g.id));
+        el.addEventListener('touchstart', (e) => {
+          e.preventDefault();
+          switchGarment(g.id);
+        }, { passive: false });
+        grid.appendChild(el);
+      });
+
+      // ── CTA Click ──
+      document.getElementById("cta-btn").addEventListener("click", () => {
+        posthog.capture("early_access_clicked");
+        alert("Thanks for your interest! We'll reach out soon.");
+      });
+
+      // ── Initialize SDK ──
+      async function initAIKart() {
+        try {
+          aikartInstance = await window.AIKart.init({
+            garmentImage: GARMENTS[0].imageUrl,
+            container: document.getElementById("ar-container"),
+            onLoadProgress: (stage, msg) => {
+              console.log(`[AI-Kart] Stage ${stage}/3: ${msg}`);
+            },
+            onError: (code, msg) => {
+              console.error(`[AI-Kart] Error ${code}: ${msg}`);
+              posthog.capture("ar_error", { code, message: msg });
+            },
+            onGarmentChange: (id) => {
+              console.log(`[AI-Kart] Garment changed: ${id}`);
+            },
+          });
+
+          // PostHog: Camera enabled (engine.init() succeeded = camera granted)
+          posthog.capture("camera_enabled");
+
+          // Load catalog into SDK instance
+          aikartInstance.loadGarmentCatalog(GARMENTS);
+
+          // Mark initial garment as active
+          garmentViewStartTime = Date.now();
+          sessionStartTime = Date.now();
+          setActiveGarmentUI(GARMENTS[0].id);
+          document.getElementById("stat-garment").textContent =
+            GARMENTS[0].label;
+
+          // ── Heartbeat: every 10s ──
+          heartbeatInterval = setInterval(() => {
+            if (!aikartInstance) return;
+            const secondsActive = Math.round(
+              (Date.now() - sessionStartTime) / 1000,
+            );
+            posthog.capture("ar_session_heartbeat", {
+              secondsActive,
+              avgFps: aikartInstance.fps(),
+              currentGarment: aikartInstance.currentGarmentId(),
+            });
+          }, 10_000);
+
+          // ── Stats UI: every 1s ──
+          statsInterval = setInterval(updateStatsUI, 1000);
+        } catch (err) {
+          console.error("[AI-Kart] Init failed:", err);
+          showFallbackMessage("Failed to initialize AR experience.");
+          posthog.capture("ar_init_failed", { error: err.message });
+        }
+      }
+
+      // ── Switch Garment ──
+      async function switchGarment(id) {
+        if (!aikartInstance) return;
+        const currentId = aikartInstance.currentGarmentId();
+        if (currentId === id) return;
+
+        // Calculate dwell time on previous garment
+        const elapsed = garmentViewStartTime
+          ? Date.now() - garmentViewStartTime
+          : 0;
+        const garment = GARMENTS.find((g) => g.id === id);
+
+        try {
+          await aikartInstance.switchGarment(id);
+
+          // PostHog: Garment viewed
+          posthog.capture("garment_viewed", {
+            garmentId: id,
+            garmentLabel: garment?.label ?? id,
+            timeOnPreviousGarment: elapsed,
+          });
+
+          // Reset dwell timer
+          garmentViewStartTime = Date.now();
+
+          // Update UI
+          setActiveGarmentUI(id);
+          document.getElementById("stat-garment").textContent =
+            garment?.label ?? id;
+        } catch (err) {
+          console.error("[AI-Kart] Garment switch failed:", err);
+        }
+      }
+
+      // ── UI Helpers ──
+      function setActiveGarmentUI(id) {
+        document.querySelectorAll('.garment-item').forEach((el) => {
+          el.classList.toggle('active', el.dataset.id === id);
+        });
+      }
+
+      function updateStatsUI() {
+        if (!aikartInstance || !sessionStartTime) return;
+        const fps = aikartInstance.fps();
+        const elapsed = Math.round((Date.now() - sessionStartTime) / 1000);
+        document.getElementById('stat-fps').textContent = `${fps}`;
+        document.getElementById('stat-session').textContent = `${elapsed}s`;
+      }
+
+      // ── Fallback for unsupported browsers ──
+      function showFallbackMessage(reason) {
+        const container = document.getElementById('ar-container');
+        container.innerHTML = `
+          <div class="fallback-msg">
+            <div class="fallback-icon">⚠️</div>
+            <div class="fallback-title">Limited AR Support</div>
+            <div class="fallback-text">
+              ${reason || 'Your browser does not support AR features.'}<br/><br/>
+              For the best experience, use <strong>Chrome</strong> or <strong>Edge</strong> on desktop.
+            </div>
+          </div>
+        `;
+      }
+
+      // ── Canvas resize on window resize (debounced, >50px delta) ──
+      let lastResizeW = window.innerWidth;
+      let lastResizeH = window.innerHeight;
+      let resizeTimer = null;
+
+      window.addEventListener('resize', () => {
+        if (resizeTimer) clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(() => {
+          const dw = Math.abs(window.innerWidth - lastResizeW);
+          const dh = Math.abs(window.innerHeight - lastResizeH);
+          if ((dw > 50 || dh > 50) && aikartInstance) {
+            lastResizeW = window.innerWidth;
+            lastResizeH = window.innerHeight;
+            // Re-evaluate canvas size
+            const container = document.getElementById('ar-container');
+            const canvas = container.querySelector('canvas');
+            if (canvas) {
+              const rect = container.getBoundingClientRect();
+              canvas.width = Math.max(rect.width, 320);
+              canvas.height = Math.max(rect.height, 240);
+            }
+          }
+        }, 200);
+      });
+
+      // ── Start (with support check) ──
+      const support = window.AIKart.isSupported();
+      if (!support.supported) {
+        showFallbackMessage(support.reason);
+        posthog.capture('ar_unsupported', { reason: support.reason });
+      } else {
+        initAIKart();
+      }
+    </script>
+  </body>
+</html>
