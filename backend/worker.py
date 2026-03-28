@@ -21,69 +21,75 @@ import json
 import random
 import base64
 from io import BytesIO
-from typing import Optional
+from typing import Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
+
+def safe_redis_hset(redis_conn, name: str, mapping: dict) -> None:
+    """Hash set with mapping; no-op if Redis is unavailable."""
+    if redis_conn is None:
+        return
+    try:
+        redis_conn.hset(name, mapping=mapping)
+    except Exception:
+        pass
+
+
+def safe_redis_hget(redis_conn, name: str, field: str):
+    if redis_conn is None:
+        return None
+    try:
+        return redis_conn.hget(name, field)
+    except Exception:
+        return None
+
+
+def safe_redis_expire(redis_conn, name: str, seconds: int) -> None:
+    if redis_conn is None:
+        return
+    try:
+        redis_conn.expire(name, seconds)
+    except Exception:
+        pass
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Global Model State (Warm Cache)
 # ──────────────────────────────────────────────────────────────────────────────
 
-_VTON_MODEL = None
-_MODEL_LOAD_TIME = None  # Track when the model was loaded for health metrics
+_VTON_PIPELINE = None   # Local diffusion pipeline (IDM-VTON / SDXL Inpaint bundle)
+_MODEL_LOAD_TIME = None
 
 
-def _load_vton_model():
+def _load_vton_model(progress: "ProgressReporter" = None):
     """
-    Load the virtual try-on diffusion model into GPU memory.
-    Called once — subsequent calls return the cached model.
-
-    Production targets:
-        IDM-VTON: yisol/IDM-VTON (best quality, needs 24GB VRAM)
-        CatVTON:  zhengchong/CatVTON (faster, runs on 16GB T4)
-        OOTDiffusion: for single-garment overlay (lightest)
+    Load VTry-on pipeline (IDM-VTON HF weights) into GPU with CPU offload on 6GB cards.
+    Called once — subsequent calls return the warm cached pipeline.
     """
-    global _VTON_MODEL, _MODEL_LOAD_TIME
-    if _VTON_MODEL is not None:
-        return _VTON_MODEL
+    global _VTON_PIPELINE, _MODEL_LOAD_TIME
+    if _VTON_PIPELINE is not None:
+        return _VTON_PIPELINE
 
-    from config import USE_MOCK_ML, REPLICATE_API_KEY
-    if USE_MOCK_ML or not REPLICATE_API_KEY:
-        logger.info("[WORKER] Mock mode or missing Replicate API key — skipping model load.")
-        _VTON_MODEL = "MOCK"
-        _MODEL_LOAD_TIME = time.time()
-        return _VTON_MODEL
+    def _cb(pct, detail):
+        if progress:
+            progress.update(pct, detail)
 
-    logger.info("[WORKER] Initializing Replicate IDM-VTON pipeline...")
-    start = time.time()
-
-    import replicate
-    # We don't load the model into local VRAM when using Replicate,
-    # but we initialize the client to verify it works.
-    _VTON_MODEL = "REPLICATE_IDM_VTON"
+    from local_vton_engine import load_pipeline
+    pipeline = load_pipeline(progress_cb=_cb)
+    _VTON_PIPELINE = pipeline
     _MODEL_LOAD_TIME = time.time()
-    logger.info(f"[WORKER] Replicate client initialized in {time.time() - start:.3f}s")
-    return _VTON_MODEL
+    return _VTON_PIPELINE
 
 
 def _check_gpu_health() -> dict:
-    """Check GPU memory and utilization. Used before inference starts."""
+    """Check GPU memory utilization. Used by /health endpoint."""
     try:
-        import torch
-        if torch.cuda.is_available():
-            props = torch.cuda.get_device_properties(0)
-            allocated = torch.cuda.memory_allocated(0) / 1e9
-            total = props.total_mem / 1e9
-            return {
-                "gpu_available": True,
-                "gpu_name": props.name,
-                "vram_total_gb": round(total, 1),
-                "vram_used_gb": round(allocated, 1),
-                "vram_free_gb": round(total - allocated, 1),
-            }
+        from local_vton_engine import get_gpu_stats
+        return get_gpu_stats()
     except Exception:
         pass
-    return {"gpu_available": False, "reason": "No CUDA GPU detected or torch not installed"}
+    return {"gpu_available": False, "reason": "local_vton_engine not available"}
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -115,8 +121,17 @@ class ProgressReporter:
         updates = {"progress_pct": str(pct)}
         if detail:
             updates["progress_detail"] = detail
-        if self.redis_conn:
-            self.redis_conn.hset(self.job_key, mapping=updates)
+        safe_redis_hset(self.redis_conn, self.job_key, updates)
+        
+        try:
+            from local_state import LOCAL_JOBS
+            if self.job_id in LOCAL_JOBS:
+                LOCAL_JOBS[self.job_id]["progressPct"] = pct
+                if detail:
+                    LOCAL_JOBS[self.job_id]["progressDetail"] = detail
+        except Exception:
+            pass
+            
         logger.info(f"[WORKER] Job {self.job_id}: {pct}% — {detail}")
 
 
@@ -128,85 +143,32 @@ def _run_vton_inference(
     model,
     person_image_b64: str,
     garment_id: str,
-    progress: ProgressReporter
-) -> str:
+    progress: ProgressReporter,
+    garment_image_b64: Optional[str] = None,
+) -> Tuple[str, str]:
     """
-    Run virtual try-on inference. Returns the generated image URL.
+    Run local GPU virtual try-on (IDM-VTON checkpoint, SDXL Inpaint forward).
 
-    Mock mode: Simulates realistic GPU timing with progressive delays.
-    Production: Replace with real IDM-VTON pipeline call.
+    The model arg is the loaded diffusers pipeline (same as local_vton_engine cache).
+    Returns (full_image_url, thumbnail_url).
     """
-    if model == "MOCK":
-        # Simulate realistic GPU processing with progressive progress updates
-        progress.update(10, "Preprocessing user photo — resizing to 768x1024")
-        time.sleep(0.5)
+    from local_vton_engine import INFERENCE_STEPS, GUIDANCE_SCALE, run_local_tryon
 
-        progress.update(30, "IDM-VTON diffusion started — step 1/30")
-        time.sleep(0.8)
+    def _cb(pct: int, detail: str = ""):
+        progress.update(pct, detail)
 
-        progress.update(45, "Diffusion step 10/30 — refining cloth draping")
-        time.sleep(0.6)
+    progress.update(15, "Preprocessing inputs for local GPU inference...")
 
-        progress.update(60, "Diffusion step 18/30 — baking volumetric shadows")
-        time.sleep(0.5)
+    return run_local_tryon(
+        person_image_b64=person_image_b64,
+        garment_image_b64=garment_image_b64,
+        garment_category="upperbody",
+        n_steps=INFERENCE_STEPS,
+        guidance_scale=GUIDANCE_SCALE,
+        progress_cb=_cb,
+    )
 
-        progress.update(75, "Diffusion step 26/30 — enhancing texture detail")
-        time.sleep(0.4)
 
-        progress.update(85, "Postprocessing — skin tone harmonization")
-        time.sleep(0.3)
-
-        progress.update(95, "Uploading to CDN — generating presigned URL")
-        time.sleep(0.3)
-
-        from config import MOCK_TRYON_IMAGES
-        return random.choice(MOCK_TRYON_IMAGES)
-
-    if model == "REPLICATE_IDM_VTON":
-        import os
-        import replicate
-        from config import REPLICATE_API_KEY
-        
-        os.environ["REPLICATE_API_TOKEN"] = REPLICATE_API_KEY
-
-        progress.update(10, "Preparing image payloads for Replicate")
-        
-        # We need data URIs for Replicate
-        person_image_uri = f"data:image/jpeg;base64,{person_image_b64}"
-        
-        # In a real system, garment_id would fetch the garment image b64 or URL from CDN/DB.
-        # Here we mock the garment image URI for testing purposes since it's an ID.
-        # We'll use a placeholder URL if we don't have the actual garment bits.
-        garment_image_uri = f"https://cdn.aikart.io/garments/{garment_id}.jpg" 
-        
-        progress.update(30, "Calling Replicate IDM-VTON inference")
-        
-        try:
-            output = replicate.run(
-                "yisol/idm-vton:c871bb9b046607b680449ecbae55fd8c6d945e0a1948644bf2361b3d021d3ff4",
-                input={
-                    "crop": False,
-                    "seed": 42,
-                    "steps": 30,
-                    "category": "upper_body",
-                    "force_dc": False,
-                    "garm_img": garment_image_uri,
-                    "human_img": person_image_uri,
-                    "garment_des": "high quality clothing"
-                }
-            )
-            
-            progress.update(85, "Replicate inference complete")
-            progress.update(95, "Resolving CDN output URL")
-            
-            # The output is typically a URL to the generated image
-            return output if isinstance(output, str) else str(output)
-            
-        except Exception as e:
-            logger.error(f"Replicate API failed: {e}")
-            raise RuntimeError(f"IDM-VTON generation failed: {e}")
-
-    raise NotImplementedError(f"Model {model} not supported or improperly configured.")
 
 
 def _generate_recommendation(garment_id: str) -> dict:
@@ -230,6 +192,7 @@ def run_tryon_inference(
     garment_id: str,
     user_photo_b64: str,
     include_recommendation: bool = False,
+    webhook_url: Optional[str] = None,
     attempt: int = 1,
 ):
     """
@@ -245,18 +208,29 @@ def run_tryon_inference(
     """
     import redis as redis_lib
     from config import REDIS_URL, JOB_TTL_SECONDS
+    from local_state import LOCAL_JOBS
 
-    r = redis_lib.from_url(REDIS_URL, decode_responses=True)
+    try:
+        r = redis_lib.from_url(REDIS_URL, decode_responses=True)
+        # Test connection
+        r.ping()
+    except Exception:
+        r = None
+        
     job_key = f"aikart:job:{brand_id}:{job_id}"
     progress = ProgressReporter(job_id, brand_id, r)
 
     try:
         # ── Step 1: Mark as processing ────────────────────────────────────────
-        r.hset(job_key, mapping={
+        safe_redis_hset(r, job_key, {
             "status": "processing",
             "attempt": str(attempt),
             "started_at": str(time.time()),
         })
+
+        if job_id in LOCAL_JOBS:
+            LOCAL_JOBS[job_id]["status"] = "processing"
+            LOCAL_JOBS[job_id]["attempt"] = attempt
         progress.update(0, "Job picked up by GPU worker")
         logger.info(f"[WORKER] Starting job {job_id} (brand: {brand_id}, attempt: {attempt})")
 
@@ -265,30 +239,69 @@ def run_tryon_inference(
         model = _load_vton_model()
 
         # ── Step 3: Run inference with live progress ──────────────────────────
-        image_url = _run_vton_inference(model, user_photo_b64, garment_id, progress)
+        image_url, thumb_url = _run_vton_inference(model, user_photo_b64, garment_id, progress)
 
         # ── Step 4: Store result ──────────────────────────────────────────────
         update_data = {
             "status": "completed",
             "image_url": image_url,
+            "thumb_url": thumb_url,
             "completed_at": str(time.time()),
             "progress_pct": "100",
             "progress_detail": "Render complete",
         }
 
+        recommendation = None
         if include_recommendation:
             recommendation = _generate_recommendation(garment_id)
             update_data["recommendation"] = json.dumps(recommendation)
 
-        # Compute processing time for SLA tracking
-        started_at = float(r.hget(job_key, "started_at") or time.time())
-        processing_time = time.time() - started_at
-        update_data["processing_time_seconds"] = f"{processing_time:.2f}"
+        processing_time = 0.0
+        started_raw = safe_redis_hget(r, job_key, "started_at")
+        if started_raw is not None:
+            try:
+                started_at = float(started_raw)
+                processing_time = time.time() - started_at
+                update_data["processing_time_seconds"] = f"{processing_time:.2f}"
+            except (TypeError, ValueError):
+                pass
+        safe_redis_hset(r, job_key, update_data)
+        safe_redis_expire(r, job_key, JOB_TTL_SECONDS)
 
-        r.hset(job_key, mapping=update_data)
-        r.expire(job_key, JOB_TTL_SECONDS)
+        try:
+            from local_state import LOCAL_JOBS
+            if job_id in LOCAL_JOBS:
+                if LOCAL_JOBS[job_id].get("started_at"):
+                    processing_time = time.time() - float(LOCAL_JOBS[job_id]["started_at"])
+                LOCAL_JOBS[job_id]["status"] = "completed"
+                LOCAL_JOBS[job_id]["imageUrl"] = image_url
+                LOCAL_JOBS[job_id]["thumbUrl"] = thumb_url
+                LOCAL_JOBS[job_id]["progressPct"] = 100
+                if recommendation:
+                    LOCAL_JOBS[job_id]["recommendation"] = recommendation
+        except Exception:
+            pass
 
         logger.info(f"[WORKER] Job {job_id} completed in {processing_time:.2f}s. Image: {image_url}")
+
+        # ── Step 5: Webhook Trigger (Task 4) ──────────────────────────────────
+        if webhook_url:
+            try:
+                import httpx
+                payload = {
+                    "event": "render_complete",
+                    "job_id": job_id,
+                    "result_url": image_url,
+                }
+                if include_recommendation:
+                    payload["fit_score"] = recommendation.get("confidenceScore")
+                
+                # Fire and forget / simple sync request (worker thread)
+                httpx.post(webhook_url, json=payload, timeout=5.0)
+                logger.info(f"[WEBHOOK] Fired 'render_complete' to {webhook_url}")
+            except Exception as e:
+                logger.warning(f"[WEBHOOK] Failed to post to {webhook_url}: {e}")
+
         return {"status": "completed", "image_url": image_url, "processing_time": processing_time}
 
     except Exception as e:
@@ -299,8 +312,7 @@ def run_tryon_inference(
         retried = retry_job(job_id, brand_id, attempt + 1, str(e))
 
         if not retried:
-            # DLQ — update the job with final error
-            r.hset(job_key, mapping={
+            safe_redis_hset(r, job_key, {
                 "status": "failed",
                 "error": f"Permanently failed after {attempt} attempts: {str(e)}",
                 "failed_at": str(time.time()),
@@ -308,3 +320,32 @@ def run_tryon_inference(
             })
 
         raise  # Re-raise so RQ marks the job as failed
+
+if __name__ == '__main__':
+    from rq import Connection
+    from rq.job import Job
+    from job_queue import HIGH_QUEUE, DEFAULT_QUEUE, LOW_QUEUE
+    import time
+    import traceback
+    
+    with Connection(r):
+        print(f"[AI-Kart Worker] Starting Windows-compatible synchronous polling loop...")
+        print(f"[AI-Kart Worker] Listening on queues: {HIGH_QUEUE}, {DEFAULT_QUEUE}, {LOW_QUEUE}")
+        
+        while True:
+            job_found = False
+            for queue_name in [HIGH_QUEUE, DEFAULT_QUEUE, LOW_QUEUE]:
+                job_id = r.lpop(f"rq:queue:{queue_name}")
+                if job_id:
+                    job_found = True
+                    job_id_str = job_id.decode('utf-8') if isinstance(job_id, bytes) else job_id
+                    print(f"Executing job {job_id_str} from {queue_name}...")
+                    try:
+                        job = Job.fetch(job_id_str, connection=r)
+                        job.perform()
+                    except Exception as e:
+                        print(f"Error performing job {job_id_str}:\n{traceback.format_exc()}")
+                    break
+            
+            if not job_found:
+                time.sleep(2)

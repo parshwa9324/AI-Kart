@@ -22,6 +22,7 @@ With Redis (recommended):
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 import uvicorn
@@ -30,16 +31,24 @@ import numpy as np
 import logging
 import time
 import uuid
+from pathlib import Path
 
-from auth import get_current_brand, get_brand_plan, get_brand_capabilities, require_capability, check_rate_limit
+from auth import get_current_brand, get_brand_capabilities, require_capability, check_rate_limit, create_access_token
+from database import get_db, AsyncSession
+from sqlalchemy import select
+from models import Brand as BrandModel, Garment as GarmentModel
 from job_queue import create_tryon_job, get_job_status, get_queue_health, JobStatus
-from config import USE_MOCK_ML, SLA
+from config import USE_MOCK_ML, SLA, RESULT_CACHE_DIR
 from size_engine import (
     BodyMeasurements, GarmentSpec, GarmentMeasurements, MaterialSpec,
     analyze_garment_fit, recommend_size, compare_brand_sizes,
     validate_body_measurements, validate_garment_measurements,
     get_material_stretch, DEMO_BRAND_SIZE_CHARTS, MATERIAL_STRETCH_DB,
 )
+from profile_store import (
+    BodyProfile, save_profile, get_profile, delete_profile, generate_session_token
+)
+from local_vton_engine import GPUBusyError, get_gpu_stats
 
 logger = logging.getLogger(__name__)
 
@@ -125,12 +134,24 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["Permissions-Policy"]       = "camera=(), microphone=(), geolocation=()"
         response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains; preload"
         response.headers["Content-Security-Policy"]  = (
-            "default-src 'none'; "
+            "default-src 'self'; "
+            "script-src 'self' https://cdn.jsdelivr.net 'unsafe-inline'; "
+            "style-src 'self' https://cdn.jsdelivr.net 'unsafe-inline'; "
+            "img-src 'self' data: https:; "
             "frame-ancestors 'none';"
         )
         return response
 
 app.add_middleware(SecurityHeadersMiddleware)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Static File Mount — Serve Try-On Result Images
+# Renders are saved to disk by local_vton_engine, served at /renders/<uuid>.jpg
+# ──────────────────────────────────────────────────────────────────────────────
+_renders_dir = Path(RESULT_CACHE_DIR)
+_renders_dir.mkdir(parents=True, exist_ok=True)
+app.mount("/renders", StaticFiles(directory=str(_renders_dir)), name="renders")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -196,7 +217,9 @@ class TryOnRenderResponse(BaseModel):
     status: str
     estimatedSeconds: Optional[int] = 15
     progressPct: Optional[int] = 0
+    progressDetail: Optional[str] = None
     imageUrl: Optional[str] = None
+    thumbUrl: Optional[str] = None
     recommendation: Optional[dict] = None
     error: Optional[str] = None
     slaWarning: Optional[str] = None
@@ -220,6 +243,20 @@ class BodyScanResponse(BaseModel):
     confidence: float
     scanMethod: str
     inputQuality: str
+
+class LandmarkPoint(BaseModel):
+    x: float
+    y: float
+    z: float
+    visibility: Optional[float] = None
+
+class LandmarksScanRequest(BaseModel):
+    """Phase 18: Landmarks geometric scan."""
+    frontalScan: list[LandmarkPoint]
+    leftLateralScan: list[LandmarkPoint]
+    rightLateralScan: list[LandmarkPoint]
+    heightCm: float = Field(..., description="Estimated or manual height in cm", ge=100, le=250)
+    absoluteScaleMultiplier: float
 
 class TokenRequest(BaseModel):
     apiKey: str
@@ -265,38 +302,91 @@ def health_check():
 
 
 @app.post("/api/v1/auth/token")
-def get_token(req: TokenRequest):
-    """Exchange a brand API key for a short-lived JWT token."""
-    from auth import DEMO_BRANDS, create_access_token
+async def get_token(req: TokenRequest, db: AsyncSession = Depends(get_db)):
+    """
+    Exchange a brand API key for a JWT token.
+    Validates api_key + brand_id against the PostgreSQL brands table.
+    """
+    result = await db.execute(
+        select(BrandModel).where(
+            BrandModel.api_key == req.apiKey,
+            BrandModel.id == req.brandId,
+        )
+    )
+    brand = result.scalar_one_or_none()
 
-    brand = DEMO_BRANDS.get(req.brandId)
-    if not brand or brand["api_key"] != req.apiKey:
+    if brand is None:
         raise HTTPException(
             status_code=401,
             detail={"error": ErrorCode.AUTH_FAILED, "message": "Invalid API key or brand ID."}
         )
 
-    token = create_access_token(req.brandId)
-    plan = brand.get("plan", "trial")
-    capabilities = get_brand_capabilities(req.brandId)
+    token = create_access_token(brand.id, plan_tier=brand.plan_tier)
+    capabilities = get_brand_capabilities(brand.plan_tier)
 
     return {
         "access_token": token,
         "token_type": "bearer",
         "expires_in": 604800,
-        "plan": plan,
+        "plan": brand.plan_tier,
         "capabilities": capabilities,
     }
 
+
+class WebhookRequest(BaseModel):
+    url: str
+
+@app.post("/api/v1/brand/webhook")
+async def update_webhook(req: WebhookRequest, brand_id: str = Depends(get_current_brand), db: AsyncSession = Depends(get_db)):
+    """
+    Task 4: Save webhook_url to brands table.
+    Triggered after successful render.
+    """
+    result = await db.execute(select(BrandModel).where(BrandModel.id == brand_id))
+    brand = result.scalar_one_or_none()
+    if not brand:
+        raise HTTPException(status_code=404, detail="Brand not found")
+    
+    brand.webhook_url = req.url
+    await db.commit()
+    return {"status": "success", "webhook_url": brand.webhook_url}
+
+
+class ConsentRequest(BaseModel):
+    session_uuid: str
+    consented: bool
+
+@app.post("/api/v1/consent")
+async def record_consent(req: ConsentRequest, db: AsyncSession = Depends(get_db)):
+    """
+    Task 5: Server-side GDPR consent recording.
+    """
+    from sqlalchemy import update
+    from datetime import datetime, timezone
+    
+    # We attempt an update. If the profile doesn't exist yet, we do nothing and it will
+    # be created later (or we could orchestrate differently, but usually session_uuid exists).
+    if req.consented:
+        await db.execute(
+            update(BodyProfile)
+            .where(BodyProfile.session_uuid == req.session_uuid)
+            .values(consented_at=datetime.now(timezone.utc))
+        )
+        await db.commit()
+    return {"status": "recorded"}
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Phase 16: Virtual Try-On — Async GPU Pipeline
 # ──────────────────────────────────────────────────────────────────────────────
 
+from fastapi import BackgroundTasks
+
 @app.post("/api/v1/tryon/render", response_model=TryOnRenderResponse)
 async def render_virtual_tryon(
     req: TryOnRenderRequest,
-    brand_id: str = Depends(get_current_brand)
+    background_tasks: BackgroundTasks,
+    brand_id: str = Depends(get_current_brand),
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Enqueue a Virtual Try-On render job. Returns jobId in < 100ms.
@@ -304,47 +394,63 @@ async def render_virtual_tryon(
     Rate limited per brand tier. Enterprise brands get priority GPU queue.
     Client polls /api/v1/tryon/status/{job_id} for progress updates.
     """
-    # ── Rate limit check ──────────────────────────────────────────────────────
-    rate_info = check_rate_limit(brand_id, action="render")
+    # ── Resolve brand plan from DB (one index lookup ~1ms on Neon pooler) ────────
+    result = await db.execute(select(BrandModel).where(BrandModel.id == brand_id))
+    brand_row = result.scalar_one_or_none()
+    brand_plan = brand_row.plan_tier if brand_row else "enterprise"
 
-    # ── Capability check ──────────────────────────────────────────────────────
-    require_capability(brand_id, "vton_enabled")
-
-    brand_plan = get_brand_plan(brand_id)
+    # ── Rate limit + capability check ─────────────────────────────────────────
+    check_rate_limit(brand_id, plan=brand_plan, action="render")
+    require_capability(brand_plan, "vton_enabled")
     logger.info(f"[RENDER] brand='{brand_id}' plan='{brand_plan}' garment='{req.garmentId}'")
 
-    job_result = create_tryon_job(
-        brand_id=brand_id,
-        garment_id=req.garmentId,
-        user_photo_b64=req.userPhoto,
-        brand_plan=brand_plan,
-        include_recommendation=req.includeRecommendation or False,
-    )
+    webhook_url = brand_row.webhook_url if brand_row else None
 
-    if job_result.get("_sync_fallback"):
-        import asyncio, random
-        await asyncio.sleep(3.5)
-        from config import MOCK_TRYON_IMAGES
-        return TryOnRenderResponse(
-            jobId=job_result["jobId"],
-            status=JobStatus.COMPLETED,
-            imageUrl=random.choice(MOCK_TRYON_IMAGES),
-            progressPct=100,
-            estimatedSeconds=0,
-            recommendation={
-                "recommendedSize": "M",
-                "confidenceScore": 92.5,
-                "overallFit": "REGULAR",
-                "returnRisk": "low",
-                "dataQuality": 95
-            } if req.includeRecommendation else None,
-        )
+    webhook_url = brand_row.webhook_url if brand_row else None
+
+    # On Windows, RQ multiprocessing and SimpleWorker fail.
+    # To achieve seamless background rendering out of the box, we use FastAPI's
+    # built-in BackgroundTasks threadpool.
+    import uuid, time
+    from local_state import LOCAL_JOBS
+    
+    job_id = str(uuid.uuid4())
+    
+    # Initialize job in shared memory
+    LOCAL_JOBS[job_id] = {
+        "status": "processing",
+        "progressPct": 0,
+        "estimatedSeconds": 15
+    }
+    
+    # Import the custom worker logic directly
+    # Ensure it's imported globally or safely inside thread
+    def run_inference_bg():
+        try:
+            from worker import run_tryon_inference
+            run_tryon_inference(
+                job_id=job_id,
+                brand_id=brand_id,
+                garment_id=req.garmentId,
+                user_photo_b64=req.userPhoto,
+                include_recommendation=req.includeRecommendation or False,
+                webhook_url=webhook_url,
+                attempt=1
+            )
+        except Exception as e:
+            logger.error(f"Background rendering failed: {e}", exc_info=True)
+            LOCAL_JOBS[job_id]["status"] = "failed"
+            LOCAL_JOBS[job_id]["error"] = str(e)
+
+
+    # Dispatch to FastAPI threadpool
+    background_tasks.add_task(run_inference_bg)
 
     return TryOnRenderResponse(
-        jobId=job_result["jobId"],
-        status=job_result["status"],
-        estimatedSeconds=job_result.get("estimatedSeconds", 15),
-        progressPct=job_result.get("progressPct", 0),
+        jobId=job_id,
+        status="processing",
+        estimatedSeconds=15,
+        progressPct=0,
     )
 
 
@@ -359,6 +465,22 @@ async def poll_render_status(
     Returns status + progressPct so the frontend can drive a real progress bar.
     Security: Brand can only access their own jobs (tenant-scoped).
     """
+    from local_state import LOCAL_JOBS
+    
+    if job_id in LOCAL_JOBS:
+        job = LOCAL_JOBS[job_id]
+        return TryOnRenderResponse(
+            jobId=job_id,
+            status=job["status"],
+            progressPct=job.get("progressPct", 0),
+            progressDetail=job.get("progressDetail"),
+            imageUrl=job.get("imageUrl"),
+            thumbUrl=job.get("thumbUrl"),
+            recommendation=job.get("recommendation"),
+            error=job.get("error")
+        )
+
+    # Fallback to standard queue logic if not in local memory
     job = get_job_status(job_id=job_id, brand_id=brand_id)
 
     if job is None:
@@ -371,7 +493,9 @@ async def poll_render_status(
         jobId=job["jobId"],
         status=job["status"],
         progressPct=job.get("progressPct", 0),
+        progressDetail=job.get("progressDetail"),
         imageUrl=job.get("imageUrl"),
+        thumbUrl=job.get("thumbUrl"),
         recommendation=job.get("recommendation"),
         error=job.get("error"),
         slaWarning=job.get("sla_warning"),
@@ -387,7 +511,8 @@ async def poll_render_status(
 @app.post("/api/v1/body/scan", response_model=BodyScanResponse)
 async def scan_body(
     req: BodyScanRequest,
-    brand_id: str = Depends(get_current_brand)
+    brand_id: str = Depends(get_current_brand),
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Phase 18: BMI-adjusted precision body measurement extraction.
@@ -399,9 +524,12 @@ async def scan_body(
         + Age group:     ±2cm  (confidence: 0.86)
         + Photo (SAM3D): ±1cm  (confidence: 0.93)
     """
-    # ── Rate limit check ──────────────────────────────────────────────────────
-    check_rate_limit(brand_id, action="body_scan")
-    require_capability(brand_id, "body_scan_enabled")
+    # ── Resolve brand plan ────────────────────────────────────────────────────
+    res = await db.execute(select(BrandModel).where(BrandModel.id == brand_id))
+    brand_row = res.scalar_one_or_none()
+    brand_plan = brand_row.plan_tier if brand_row else "enterprise"
+    check_rate_limit(brand_id, plan=brand_plan, action="body_scan")
+    require_capability(brand_plan, "body_scan_enabled")
 
     from body_scan import scan_body_from_photo
 
@@ -436,6 +564,43 @@ async def scan_body(
 # Phase 13: 3-Pose Spatial Topology (Body Scan via Multi-Pose CV)
 # ──────────────────────────────────────────────────────────────────────────────
 
+@app.post("/api/v1/body/scan/landmarks", response_model=BodyScanResponse)
+async def scan_body_landmarks(
+    req: LandmarksScanRequest,
+    brand_id: str = Depends(get_current_brand),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Phase 18: Geometric Measurements from MediaPipe Landmarks.
+    """
+    res = await db.execute(select(BrandModel).where(BrandModel.id == brand_id))
+    brand_row = res.scalar_one_or_none()
+    brand_plan = brand_row.plan_tier if brand_row else "enterprise"
+    check_rate_limit(brand_id, plan=brand_plan, action="body_scan")
+    require_capability(brand_plan, "body_scan_enabled")
+
+    from body_scan import scan_body_from_landmarks
+
+    logger.info(f"[BODY_SCAN] Geometric landmarks scan for brand='{brand_id}'")
+
+    measurements = scan_body_from_landmarks(
+        frontal_scan=[p.dict() for p in req.frontalScan],
+        left_lateral_scan=[p.dict() for p in req.leftLateralScan],
+        right_lateral_scan=[p.dict() for p in req.rightLateralScan],
+        absolute_scale_multiplier=req.absoluteScaleMultiplier,
+    )
+
+    return BodyScanResponse(
+        status="success",
+        brandId=brand_id,
+        measurements=measurements,
+        heightCm=measurements.get("heightCm", req.heightCm),
+        confidence=measurements.get("confidence", 0.99),
+        scanMethod=measurements.get("scanMethod", "mediapipe_geometric"),
+        inputQuality=measurements.get("inputQuality", "high"),
+    )
+
+
 class BodyProfileResponse(BaseModel):
     userId: str
     heightCm: float
@@ -450,7 +615,8 @@ async def extract_spatial_topology(
     rightImage: UploadFile = File(None),
     anchorHeightMm: float = Form(53.98),
     anchorWidthMm: float = Form(85.60),
-    brand_id: str = Depends(get_current_brand)
+    brand_id: str = Depends(get_current_brand),
+    db: AsyncSession = Depends(get_db),
 ):
     """Phase 13: Extract physical dimensions from 3-pose geometric triangulation."""
     try:
@@ -499,13 +665,17 @@ async def extract_spatial_topology(
 @app.post("/api/v1/garment/digitize")
 async def digitize_garment(
     garmentImage: UploadFile = File(...),
-    brand_id: str = Depends(get_current_brand)
+    brand_id: str = Depends(get_current_brand),
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Phase 14/17: Extract spatial measurements from a flat-lay garment photo.
     Requires 'garment_digitize_enabled' capability (standard+ plans).
     """
-    require_capability(brand_id, "garment_digitize_enabled")
+    res = await db.execute(select(BrandModel).where(BrandModel.id == brand_id))
+    brand_row = res.scalar_one_or_none()
+    brand_plan = brand_row.plan_tier if brand_row else "enterprise"
+    require_capability(brand_plan, "garment_digitize_enabled")
 
     try:
         from cv_garment import GarmentDigitizer
@@ -750,6 +920,172 @@ async def get_materials():
         },
         "count": len(MATERIAL_STRETCH_DB),
     }
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Physical Twin — Profile Persistence
+# Anonymous body scans stored by session_token from localStorage.
+# GDPR: DELETE endpoint permanently erases all biometric data.
+# NOTE: profile_store.py uses its own lightweight SQLite for ultra-fast
+# anonymous session lookups (no auth required — by design).
+# ──────────────────────────────────────────────────────────────────────────────
+
+class ProfileSaveRequest(BaseModel):
+    """Body profile save request from the frontend."""
+    session_token: str = Field(..., min_length=8, description="Anonymous UUID from localStorage")
+    height_cm: Optional[float] = None
+    weight_kg: Optional[float] = None
+    gender: Optional[str] = None
+    chest_cm: Optional[float] = None
+    waist_cm: Optional[float] = None
+    hip_cm: Optional[float] = None
+    shoulder_cm: Optional[float] = None
+    inseam_cm: Optional[float] = None
+    sleeve_cm: Optional[float] = None
+    neck_cm: Optional[float] = None
+    scan_method: str = "ratio"
+    confidence_score: Optional[float] = None
+    consent_given_at: Optional[str] = None
+
+
+@app.post("/api/v1/profile/save", tags=["Physical Twin"])
+async def save_body_profile(req: ProfileSaveRequest):
+    """
+    Save or update the user's Physical Twin body profile.
+    Called after body scan calibration completes on the frontend.
+    """
+    profile = BodyProfile(
+        session_token=req.session_token,
+        height_cm=req.height_cm,
+        weight_kg=req.weight_kg,
+        gender=req.gender,
+        chest_cm=req.chest_cm,
+        waist_cm=req.waist_cm,
+        hip_cm=req.hip_cm,
+        shoulder_cm=req.shoulder_cm,
+        inseam_cm=req.inseam_cm,
+        sleeve_cm=req.sleeve_cm,
+        neck_cm=req.neck_cm,
+        scan_method=req.scan_method,
+        confidence_score=req.confidence_score,
+        consent_given_at=req.consent_given_at,
+    )
+    saved = save_profile(profile)
+    return {
+        "status": "saved",
+        "session_token": saved.session_token,
+        "updated_at": saved.updated_at,
+    }
+
+
+@app.get("/api/v1/profile/{session_token}", tags=["Physical Twin"])
+async def load_body_profile(session_token: str):
+    """
+    Load a previously saved Physical Twin profile.
+    Called on frontend boot to restore returning user's body data.
+    """
+    profile = get_profile(session_token)
+    if profile is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "PROFILE_NOT_FOUND", "message": "No Physical Twin found for this session."}
+        )
+    return {"status": "found", "profile": profile.to_dict()}
+
+
+@app.delete("/api/v1/profile/{session_token}", tags=["Physical Twin"])
+async def delete_body_profile(session_token: str):
+    """
+    GDPR Right to Erasure — permanently delete all body scan data.
+    Called when user clicks "Delete My Data" in the privacy settings.
+    """
+    deleted = delete_profile(session_token)
+    if not deleted:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "PROFILE_NOT_FOUND", "message": "No data found for this session token."}
+        )
+    return {"status": "deleted", "message": "All biometric data permanently erased."}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Garment Catalog (Live PostgreSQL)
+# ──────────────────────────────────────────────────────────────────────────────
+
+@app.get("/api/v1/catalog", tags=["Catalog"])
+async def get_catalog(
+    brand_id: str = Depends(get_current_brand),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Return the garment catalog for the authenticated brand.
+    Filters by brand_id for strict multi-tenancy.
+    """
+    result = await db.execute(
+        select(GarmentModel).where(GarmentModel.brand_id == brand_id)
+    )
+    garments = result.scalars().all()
+    return {
+        "brandId": brand_id,
+        "count": len(garments),
+        "garments": [
+            {
+                "id": g.id,
+                "name": g.name,
+                "type": g.type,
+                "materialCode": g.material_code,
+                "stretchCoefficient": g.stretch_coefficient,
+                "sizes": g.sizes or {},
+            }
+            for g in garments
+        ],
+    }
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Admin Dashboard — Live Brand & Garment Stats (PostgreSQL)
+# ──────────────────────────────────────────────────────────────────────────────
+
+@app.get("/api/v1/admin/brands", tags=["Admin"])
+async def admin_brands(db: AsyncSession = Depends(get_db)):
+    """
+    Admin endpoint — returns all brands and garment counts.
+    Used by the admin dashboard to show live tenant metrics.
+    No auth by design (internal network only in production).
+    """
+    result = await db.execute(select(BrandModel))
+    brands = result.scalars().all()
+
+    brand_list = []
+    for b in brands:
+        garment_count_res = await db.execute(
+            select(GarmentModel).where(GarmentModel.brand_id == b.id)
+        )
+        garment_count = len(garment_count_res.scalars().all())
+        brand_list.append({
+            "id": b.id,
+            "name": b.name,
+            "plan": b.plan_tier,
+            "garmentCount": garment_count,
+        })
+
+    return {
+        "totalBrands": len(brand_list),
+        "brands": brand_list,
+    }
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# GPU Health Dashboard Endpoint
+# ──────────────────────────────────────────────────────────────────────────────
+
+@app.get("/api/v1/gpu/health", tags=["Infrastructure"])
+async def gpu_health():
+    """
+    Real-time GPU stats for the admin dashboard.
+    Returns VRAM usage, active renders, pipeline status.
+    """
+    return get_gpu_stats()
 
 
 # ──────────────────────────────────────────────────────────────────────────────

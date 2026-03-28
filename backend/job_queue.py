@@ -114,6 +114,7 @@ def create_tryon_job(
     user_photo_b64: str,
     brand_plan: str = "trial",
     include_recommendation: bool = False,
+    webhook_url: Optional[str] = None,
 ) -> dict:
     """
     Enqueue a try-on render job. Returns in < 50ms regardless of GPU load.
@@ -151,6 +152,9 @@ def create_tryon_job(
         "progress_pct":   "0",
         "include_recommendation": "1" if include_recommendation else "0",
     }
+    if webhook_url:
+        job_data["webhook_url"] = webhook_url
+        
     redis_conn.hset(job_key, mapping=job_data)
     redis_conn.expire(job_key, JOB_TTL_SECONDS)
 
@@ -167,6 +171,7 @@ def create_tryon_job(
                 "garment_id": garment_id,
                 "user_photo_b64": user_photo_b64,
                 "include_recommendation": include_recommendation,
+                "webhook_url": webhook_url,
                 "attempt": 1,
             },
             job_timeout=GPU_JOB_TIMEOUT_SECONDS,
@@ -228,6 +233,8 @@ def get_job_status(job_id: str, brand_id: str) -> Optional[dict]:
     # Enrich with completion data if available
     if job_data.get("image_url"):
         result["imageUrl"] = job_data["image_url"]
+    if job_data.get("thumb_url"):
+        result["thumbUrl"] = job_data["thumb_url"]
     if job_data.get("error"):
         result["error"] = job_data["error"]
     if job_data.get("recommendation"):
@@ -337,6 +344,7 @@ def retry_job(job_id: str, brand_id: str, attempt: int, error_msg: str) -> bool:
                 "garment_id": job_data.get("garment_id", ""),
                 "user_photo_b64": "",  # Re-use stored data in production
                 "include_recommendation": job_data.get("include_recommendation") == "1",
+                "webhook_url": job_data.get("webhook_url"),
                 "attempt": attempt,
             },
             job_timeout=GPU_JOB_TIMEOUT_SECONDS,

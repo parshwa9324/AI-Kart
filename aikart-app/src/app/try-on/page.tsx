@@ -1,344 +1,926 @@
 'use client';
 
-/**
- * AR Try-On Page — B2B SaaS Premium Interface
- *
- * - Integrated Framer Motion page transitions
- * - Glassmorphism UI using PremiumCard components
- * - Live size recommendations via SizeEngine in FitPanel
- */
-
-import { useRef, useEffect, useState, useCallback } from 'react';
+import { useRef, useEffect, useState, useCallback, useMemo } from 'react';
 import { GARMENT_CATALOG } from '../../data/GarmentCatalog';
 import { usePoseStore } from '../../store/PoseStore';
-import { motion, AnimatePresence } from 'framer-motion';
-import { PremiumCard } from '@/components/ui/PremiumCard';
-import { AnimatedButton } from '@/components/ui/AnimatedButton';
-import { Camera, Image as ImageIcon, Sparkles, History, Box, CheckCircle2, RotateCcw } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { motion, AnimatePresence, animate } from 'framer-motion';
+import { Camera, Upload, Sparkles, CheckCircle2, RotateCcw, Search, SlidersHorizontal, Grid2X2, List, Download, Share2, X } from 'lucide-react';
 import BodyCalibrationModal from '../../components/ui/BodyCalibrationModal';
 import FitPanel from '../../components/ui/FitPanel';
 import { AIKartAPI } from '@/ar-engine/APIClient';
 import type { ProgressCallback } from '@/ar-engine/APIClient';
 
+/* ══════════════════════════════════════════════════════════════
+   MAISON NOIR — VIRTUAL ATELIER WORKSPACE
+   Bloomberg Terminal × Hermès Atelier
+   ══════════════════════════════════════════════════════════════ */
+
+// Category filter definitions
+const CATEGORIES = [
+  { key: 'all',        label: 'All',       count: GARMENT_CATALOG.length },
+  { key: 'jacket',     label: 'Jackets',   count: GARMENT_CATALOG.filter(g => g.category === 'jacket').length },
+  { key: 'tshirt',     label: 'T-Shirts',  count: GARMENT_CATALOG.filter(g => g.category === 'tshirt').length },
+  { key: 'longsleeve', label: 'Long Sleeve', count: GARMENT_CATALOG.filter(g => g.category === 'longsleeve').length },
+  { key: 'dress',      label: 'Dresses',   count: GARMENT_CATALOG.filter(g => g.category === 'dress').length },
+] as const;
+
+type CategoryKey = typeof CATEGORIES[number]['key'];
+
+// View mode: grid or list
+type ViewMode = 'grid' | 'list';
+
+function makePlaceholderPhotoB64(): string {
+  if (typeof document === 'undefined') return '';
+  const c = document.createElement('canvas');
+  c.width = 256;
+  c.height = 384;
+  const ctx = c.getContext('2d');
+  if (!ctx) return '';
+  const g = ctx.createLinearGradient(0, 0, 256, 384);
+  g.addColorStop(0, '#c4a882');
+  g.addColorStop(1, '#6e5a48');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 256, 384);
+  return c.toDataURL('image/jpeg', 0.92).split(',')[1] ?? '';
+}
+
 export default function TryOnPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const [activeGarment, setActiveGarment] = useState(GARMENT_CATALOG[0].displayUrl);
-  const [showCalibration, setShowCalibration] = useState(false);
-  const [activeCatalogIdx, setActiveCatalogIdx] = useState(0);
-  const [isGenerating, setIsGenerating] = useState(false);
+  const [activeGarment, setActiveGarment]         = useState(GARMENT_CATALOG[0].displayUrl);
+  const [showCalibration, setShowCalibration]     = useState(false);
+  const [activeCatalogIdx, setActiveCatalogIdx]   = useState(0);
+  const [isGenerating, setIsGenerating]           = useState(false);
   const [generatedImageUrl, setGeneratedImageUrl] = useState<string | null>(null);
-  const [uploadedGarments, setUploadedGarments] = useState<{ name: string; url: string }[]>([]);
+  const [generatedThumbUrl, setGeneratedThumbUrl] = useState<string | null>(null);
+  const [uploadedGarments, setUploadedGarments]   = useState<{ name: string; url: string; category: string }[]>([]);
+  /** Raw base64 (no data: prefix) for API */
+  const [userPhotoB64, setUserPhotoB64] = useState<string | null>(null);
+  /** Data URL for before/after “before” side */
+  const [beforePhotoDisplayUrl, setBeforePhotoDisplayUrl] = useState<string | null>(null);
+  const portraitInputRef = useRef<HTMLInputElement>(null);
 
-  // Enterprise Phase 16: Real-time GPU progress tracking
-  const [progressPct, setProgressPct] = useState(0);
-  const [progressDetail, setProgressDetail] = useState('');
-  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [showLuxuryResult, setShowLuxuryResult] = useState(false);
+  const [compareSlider, setCompareSlider] = useState(50);
+  const [fitScoreDisplay, setFitScoreDisplay] = useState(0);
+
+  // ── Collection sidebar state ────────────────────────────────
+  const [activeCategory, setActiveCategory] = useState<CategoryKey>('all');
+  const [viewMode, setViewMode]             = useState<ViewMode>('grid');
+  const [searchQuery, setSearchQuery]       = useState('');
+  const [searchFocused, setSearchFocused]   = useState(false);
+
+  // ── Generation progress ─────────────────────────────────────
+  const [progressPct, setProgressPct]         = useState(0);
+  const [progressDetail, setProgressDetail]   = useState('');
+  const [elapsedSeconds, setElapsedSeconds]   = useState(0);
   const [generationPhase, setGenerationPhase] = useState<'queued' | 'processing' | 'uploading'>('queued');
   const elapsedRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // ── GPU Busy State ──────────────────────────────────────────
+  const [gpuBusy, setGpuBusy] = useState(false);
+
   const bodyProfile = usePoseStore(s => s.bodyProfile);
 
-  // Elapsed time counter — ticks every 100ms for smooth display
+  // ── Timer ───────────────────────────────────────────────────
   useEffect(() => {
     if (isGenerating) {
       const start = Date.now();
-      elapsedRef.current = setInterval(() => {
-        setElapsedSeconds(+(((Date.now() - start) / 1000).toFixed(1)));
-      }, 100);
+      elapsedRef.current = setInterval(() => setElapsedSeconds(+(((Date.now() - start) / 1000).toFixed(1))), 100);
     } else {
       if (elapsedRef.current) clearInterval(elapsedRef.current);
     }
     return () => { if (elapsedRef.current) clearInterval(elapsedRef.current); };
   }, [isGenerating]);
 
-  const handleGenerateFit = async () => {
-    if (!bodyProfile) {
-      alert("Please Create a Digital Profile first by clicking the 'Create Digital Profile' button.");
-      return;
-    }
+  // ── Filtered catalog ────────────────────────────────────────
+  const filteredCatalog = useMemo(() => {
+    const all = [
+      ...GARMENT_CATALOG.map((g, i) => ({ ...g, originalIdx: i, isCustom: false })),
+      ...uploadedGarments.map((g, i) => ({
+        name: g.name, category: g.category as any, displayUrl: g.url,
+        originalIdx: GARMENT_CATALOG.length + i, isCustom: true,
+        sizes: [], defaultSpec: {} as any, materialKey: 'cotton' as any, model3dUrl: undefined,
+      })),
+    ];
+    return all.filter(g => {
+      const matchCat = activeCategory === 'all' || g.category === activeCategory;
+      const matchSearch = !searchQuery || g.name.toLowerCase().includes(searchQuery.toLowerCase());
+      return matchCat && matchSearch;
+    });
+  }, [activeCategory, searchQuery, uploadedGarments]);
 
+  // ── Generate try-on ─────────────────────────────────────────
+  const handlePortraitFile = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const d = reader.result as string;
+      setBeforePhotoDisplayUrl(d);
+      const parts = d.split(',');
+      setUserPhotoB64(parts[1] ?? null);
+    };
+    reader.readAsDataURL(file);
+    if (portraitInputRef.current) portraitInputRef.current.value = '';
+  }, []);
+
+  const handleGenerateFit = async () => {
+    if (!bodyProfile) { setShowCalibration(true); return; }
     setIsGenerating(true);
     setGeneratedImageUrl(null);
-    setProgressPct(0);
-    setProgressDetail('');
-    setElapsedSeconds(0);
-    setGenerationPhase('queued');
-
+    setGeneratedThumbUrl(null);
+    setShowLuxuryResult(false);
+    setProgressPct(0); setProgressDetail(''); setElapsedSeconds(0); setGenerationPhase('queued');
+    const photoB64 = userPhotoB64 ?? makePlaceholderPhotoB64();
+    if (!beforePhotoDisplayUrl && photoB64) {
+      setBeforePhotoDisplayUrl(`data:image/jpeg;base64,${photoB64}`);
+    }
     try {
-      const userPhotoPlaceholder = "base64_encoded_photo_data_from_webcam";
-
-      // Enterprise progress callback — streams live GPU worker progress to the UI
       const onProgress: ProgressCallback = (update) => {
         setProgressPct(update.progressPct);
         if (update.detail) setProgressDetail(update.detail);
-
-        // Map status to generation phase for the spinner
         if (update.status === 'queued') setGenerationPhase('queued');
         else if (update.status === 'processing' || update.status === 'retrying') setGenerationPhase('processing');
         else if (update.progressPct >= 95) setGenerationPhase('uploading');
       };
-
       setGenerationPhase('processing');
-      const response = await AIKartAPI.renderTryOn(
-        {
-          userPhoto: userPhotoPlaceholder,
-          garmentId: GARMENT_CATALOG[activeCatalogIdx].defaultSpec.id,
-          includeRecommendation: true
-        },
-        onProgress
-      );
-
-      // Final reveal animation
+      const response = await AIKartAPI.renderTryOn({
+        userPhoto: photoB64,
+        garmentId: GARMENT_CATALOG[activeCatalogIdx]?.defaultSpec?.id ?? 'default',
+        includeRecommendation: true,
+      }, onProgress);
       setGenerationPhase('uploading');
       setProgressPct(100);
       if (response.imageUrl) {
-        await new Promise(r => setTimeout(r, 500));
+        const score = response.recommendation?.confidenceScore ?? 94;
         setGeneratedImageUrl(response.imageUrl);
+        setGeneratedThumbUrl(response.thumbUrl ?? null);
+        setCompareSlider(50);
+        await new Promise(r => setTimeout(r, 200));
+        setShowLuxuryResult(true);
+        setFitScoreDisplay(0);
+        animate(0, typeof score === 'number' ? score : 94, {
+          duration: 1.15,
+          ease: [0.16, 1, 0.3, 1],
+          onUpdate: (v) => setFitScoreDisplay(Math.round(v * 10) / 10),
+        });
       }
-    } catch (error) {
-      console.error("Try-On ML Render Failed:", error);
-      alert("Neural Engine unavailable. Is the Python backend running on port 8001?");
+    } catch (error: unknown) {
+      // Detect GPU busy (503) — show the luxury overlay instead of generic error
+      const err = error as { status?: number; message?: string };
+      if (err?.status === 503 || err?.message?.includes('GPU') || err?.message?.includes('occupied')) {
+        setGpuBusy(true);
+        setTimeout(() => setGpuBusy(false), 8000);
+      } else {
+        console.error("Try-On ML Render Failed:", error);
+      }
     } finally {
       setIsGenerating(false);
     }
   };
 
-  const selectGarment = useCallback((url: string) => {
-    setActiveGarment(url);
-    setGeneratedImageUrl(null); // Clear previous generation when switching
+  const selectGarment = useCallback((idx: number, url: string) => {
+    setActiveCatalogIdx(idx); setActiveGarment(url); setGeneratedImageUrl(null); setGeneratedThumbUrl(null);
+    setShowLuxuryResult(false);
   }, []);
+
+  const closeLuxuryResult = useCallback(() => {
+    setShowLuxuryResult(false);
+  }, []);
+
+  const tryAnotherGarment = useCallback(() => {
+    setShowLuxuryResult(false);
+    setGeneratedImageUrl(null);
+    setGeneratedThumbUrl(null);
+  }, []);
+
+  const downloadFullRender = useCallback(() => {
+    if (!generatedImageUrl) return;
+    const a = document.createElement('a');
+    a.href = generatedImageUrl;
+    a.download = 'aikart-atelier-render.jpg';
+    a.rel = 'noopener';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }, [generatedImageUrl]);
+
+  const shareRender = useCallback(async () => {
+    const url = generatedImageUrl;
+    if (!url) return;
+    try {
+      if (navigator.share) {
+        await navigator.share({ title: 'AI-Kart Atelier', text: 'Virtual try-on render', url });
+      } else {
+        await navigator.clipboard.writeText(url);
+      }
+    } catch { /* user cancelled or clipboard denied */ }
+  }, [generatedImageUrl]);
 
   const handleFileUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-
-    // Create a local object URL to display the newly uploaded "custom" garment
     const url = URL.createObjectURL(file);
     const name = file.name.replace(/\.[^.]+$/, '').replace(/[_-]/g, ' ');
-    setUploadedGarments(prev => [...prev, { name, url }]);
-    setActiveGarment(url);
-    setGeneratedImageUrl(null);
-
+    setUploadedGarments(prev => [...prev, { name, url, category: 'custom' }]);
+    selectGarment(GARMENT_CATALOG.length + uploadedGarments.length, url);
     if (fileInputRef.current) fileInputRef.current.value = '';
-  }, []);
+  }, [uploadedGarments.length, selectGarment]);
 
-  // Animation variants
-  const pageVariants = {
-    hidden: { opacity: 0, y: 20 },
-    visible: { opacity: 1, y: 0, transition: { staggerChildren: 0.1, delayChildren: 0.2 } },
-  };
-  const itemVariants = {
-    hidden: { opacity: 0, y: 20 },
-    visible: { opacity: 1, y: 0 },
-  };
+  const activeEntry = GARMENT_CATALOG[activeCatalogIdx];
 
   return (
-    <main className="min-h-screen text-[var(--foreground)] bg-[var(--background)] font-sans selection:bg-white selection:text-black overflow-x-hidden p-4 md:p-8">
+    <main style={{ minHeight: '100vh', background: 'var(--background)', color: 'var(--text-primary)', fontFamily: 'var(--font-sans)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
       <BodyCalibrationModal isOpen={showCalibration} onClose={() => setShowCalibration(false)} />
 
-      <motion.div
-        className="max-w-[1400px] mx-auto relative z-10"
-        initial="hidden"
-        animate="visible"
-        variants={pageVariants}
-      >
-        {/* Top Navigation Bar */}
-        <motion.header variants={itemVariants} className="flex items-center justify-between mb-8 pb-4 border-b border-[var(--border-subtle)]">
-          <div className="flex items-center gap-4">
-            <div className="w-6 h-6 bg-white flex items-center justify-center">
-              <Box className="w-4 h-4 text-black" />
+      {/* ── GPU BUSY OVERLAY ──────────────────────────────── */}
+      <AnimatePresence>
+        {gpuBusy && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.4 }}
+            style={{
+              position: 'fixed', inset: 0, zIndex: 100,
+              background: 'rgba(24, 17, 23, 0.85)',
+              backdropFilter: 'blur(20px)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              flexDirection: 'column', gap: 20,
+            }}
+            onClick={() => setGpuBusy(false)}
+          >
+            {/* Pulsing GPU status dot */}
+            <div style={{
+              width: 16, height: 16, borderRadius: '50%',
+              background: '#E6C364',
+              boxShadow: '0 0 20px rgba(230, 195, 100, 0.5), 0 0 60px rgba(230, 195, 100, 0.2)',
+              animation: 'pulse 2s ease-in-out infinite',
+            }} />
+            <div style={{ textAlign: 'center', fontFamily: 'var(--font-sans)' }}>
+              <p style={{
+                color: '#E6C364', fontSize: 11, fontWeight: 600,
+                letterSpacing: '0.15em', textTransform: 'uppercase', margin: '0 0 8px',
+              }}>Neural Atelier Occupied</p>
+              <p style={{ color: '#B8A99A', fontSize: 14, lineHeight: 1.6, maxWidth: 380 }}>
+                Another rendering is currently using the GPU pipeline.
+                <br />Please wait a moment and try again.
+              </p>
             </div>
-            <div>
-              <h1 className="text-sm font-medium tracking-wide text-white">AI-KART / B2B</h1>
-              <p className="text-[10px] uppercase font-mono text-[var(--text-muted)]">Virtual Try-On Engine</p>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-4">
-            <AnimatedButton
-              variant="outline"
-              onClick={() => setShowCalibration(true)}
-              className={cn(
-                "py-2 px-6 text-[10px] uppercase tracking-cinematic border-[var(--border-default)] bg-transparent hover:bg-white hover:text-black transition-colors rounded-none",
-                bodyProfile ? "border-white text-white" : "text-[var(--text-secondary)]"
-              )}
+            <button
+              onClick={(e) => { e.stopPropagation(); setGpuBusy(false); handleGenerateFit(); }}
+              style={{
+                marginTop: 12, padding: '10px 28px',
+                background: 'transparent', border: '1px solid rgba(230, 195, 100, 0.3)',
+                color: '#E6C364', fontSize: 11, fontWeight: 600,
+                letterSpacing: '0.1em', textTransform: 'uppercase',
+                cursor: 'pointer', fontFamily: 'var(--font-sans)',
+                transition: 'all 0.2s',
+              }}
+              onMouseOver={(e) => {
+                (e.target as HTMLButtonElement).style.borderColor = '#E6C364';
+                (e.target as HTMLButtonElement).style.background = 'rgba(230, 195, 100, 0.08)';
+              }}
+              onMouseOut={(e) => {
+                (e.target as HTMLButtonElement).style.borderColor = 'rgba(230, 195, 100, 0.3)';
+                (e.target as HTMLButtonElement).style.background = 'transparent';
+              }}
             >
-              {bodyProfile ? (
-                <div className="flex items-center gap-2">
-                  <CheckCircle2 className="w-4 h-4" />
-                  Profile Active: {bodyProfile.heightCm}cm
-                </div>
-              ) : (
-                "Create Digital Profile"
-              )}
-            </AnimatedButton>
-          </div>
-        </motion.header>
-
-        {/* Main Interface Layout */}
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-
-          {/* Left Column: Garment Catalog & Upload */}
-          <motion.div variants={itemVariants} className="lg:col-span-3 flex flex-col gap-6">
-            <PremiumCard className="p-0 border-none bg-transparent">
-              <h3 className="text-[10px] font-mono tracking-widest text-[var(--text-secondary)] mb-4 flex items-center gap-2 border-b border-[var(--border-subtle)] pb-2">
-                [CATALOG_INDEX]
-              </h3>
-
-              <div className="grid grid-cols-2 gap-3">
-                {GARMENT_CATALOG.map((entry, idx) => (
-                  <button
-                    key={entry.name}
-                    onClick={() => {
-                      setActiveCatalogIdx(idx);
-                      selectGarment(entry.displayUrl);
-                    }}
-                    className={cn(
-                      "relative aspect-square overflow-hidden border transition-colors duration-300 group bg-[var(--surface-primary)]",
-                      activeCatalogIdx === idx ? "border-white" : "border-[var(--border-default)] hover:border-[var(--text-muted)]"
-                    )}
-                  >
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img
-                      src={entry.displayUrl}
-                      alt={entry.name}
-                      className="w-full h-full object-cover opacity-80 transition-opacity duration-500 group-hover:opacity-100 grayscale hover:grayscale-0"
-                    />
-                    {activeCatalogIdx === idx && (
-                      <div className="absolute inset-0 bg-[#D4AF37]/10 mix-blend-overlay" />
-                    )}
-                  </button>
-                ))}
-                {/* Uploaded Custom Garments */}
-                {uploadedGarments.map((ug, idx) => (
-                  <button
-                    key={`uploaded-${idx}`}
-                    onClick={() => {
-                      setActiveCatalogIdx(-1);
-                      selectGarment(ug.url);
-                    }}
-                    className={cn(
-                      "relative aspect-square overflow-hidden border transition-colors duration-300 group bg-[var(--surface-primary)]",
-                      activeGarment === ug.url ? "border-white" : "border-dashed border-[var(--border-default)] hover:border-[var(--text-muted)]"
-                    )}
-                  >
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img
-                      src={ug.url}
-                      alt={ug.name}
-                      className="w-full h-full object-cover opacity-80 transition-opacity duration-500 group-hover:opacity-100 grayscale hover:grayscale-0"
-                    />
-                    <div className="absolute bottom-0 left-0 right-0 bg-black/90 px-2 py-1.5 text-[9px] font-mono text-[var(--text-secondary)] truncate border-t border-[var(--border-subtle)]">
-                      {ug.name}
-                    </div>
-                    {activeGarment === ug.url && (
-                      <div className="absolute inset-0 border-2 border-white pointer-events-none" />
-                    )}
-                  </button>
-                ))}
-              </div>
-
-              <div className="mt-6 pt-4 border-t border-[var(--border-subtle)]">
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept="image/png,image/jpeg,image/webp,.glb"
-                  onChange={handleFileUpload}
-                  className="hidden"
-                />
-                <button
-                  className="w-full py-3 text-[10px] uppercase font-mono tracking-cinematic text-[var(--text-secondary)] border border-[var(--border-default)] hover:bg-white hover:text-black hover:border-white transition-all"
-                  onClick={() => fileInputRef.current?.click()}
-                >
-                  UPLOAD_CUSTOM
-                </button>
-              </div>
-            </PremiumCard>
+              Retry Render
+            </button>
+            <style>{`@keyframes pulse { 0%, 100% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.3); opacity: 0.6; } }`}</style>
           </motion.div>
+        )}
+      </AnimatePresence>
 
-          {/* Center Column: AR Viewport / Neutral Render Image */}
-          <motion.div variants={itemVariants} className="lg:col-span-6 flex flex-col items-center">
-
-            {/* Control Bar */}
-            <div className="w-full pb-4 mb-4 flex justify-between items-center border-b border-[var(--border-subtle)]">
-              <div className="flex items-center gap-4">
+      {/* ── LUXURY RESULT — editorial reveal (Maison Noir gold) ── */}
+      <AnimatePresence>
+        {showLuxuryResult && generatedImageUrl && (
+          <motion.div
+            key="luxury-result"
+            role="dialog"
+            aria-modal
+            aria-label="Render complete"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.5 }}
+            style={{
+              position: 'fixed',
+              inset: 0,
+              zIndex: 400,
+              background: 'radial-gradient(ellipse 120% 80% at 50% 0%, rgba(45, 32, 40, 0.97), rgba(10, 8, 12, 0.98))',
+              backdropFilter: 'blur(24px)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              padding: 'clamp(16px, 4vw, 48px)',
+              overflow: 'auto',
+            }}
+          >
+            <motion.div
+              initial={{ opacity: 0, y: 24 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.8, ease: [0.16, 1, 0.3, 1] }}
+              style={{
+                width: 'min(960px, 100%)',
+                maxHeight: 'min(92vh, 900px)',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 24,
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16 }}>
+                <div>
+                  <p className="label-caps" style={{ fontSize: 9, letterSpacing: '0.2em', color: 'var(--gold-dim)', marginBottom: 6 }}>Atelier render</p>
+                  <h2 style={{ fontFamily: 'var(--font-serif, Georgia, serif)', fontSize: 22, fontWeight: 400, color: 'var(--text-primary)', margin: 0, letterSpacing: '0.02em' }}>
+                    Your look, refined.
+                  </h2>
+                </div>
                 <button
-                  onClick={handleGenerateFit}
-                  disabled={isGenerating}
-                  className="py-2.5 px-8 text-[10px] uppercase tracking-cinematic bg-white text-black hover:bg-[#E0E0E0] transition-colors font-medium cursor-pointer disabled:opacity-50"
+                  type="button"
+                  onClick={closeLuxuryResult}
+                  aria-label="Close"
+                  style={{
+                    flexShrink: 0,
+                    width: 40,
+                    height: 40,
+                    borderRadius: '50%',
+                    border: '1px solid rgba(201,168,76,0.25)',
+                    background: 'rgba(0,0,0,0.35)',
+                    color: 'var(--gold)',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}
                 >
-                  {isGenerating ? "SYNTHESIZING..." : "EXECUTE RENDER"}
+                  <X size={18} />
                 </button>
               </div>
 
-              {generatedImageUrl && (
-                <div className="flex items-center justify-end gap-3 flex-1">
-                  <button
-                    onClick={() => setGeneratedImageUrl(null)}
-                    className="py-2.5 px-6 text-[10px] uppercase font-mono text-[var(--text-secondary)] bg-transparent border border-[var(--border-default)] hover:text-white hover:border-white transition-colors flex items-center content-center"
-                  >
-                    RESET
-                  </button>
-                </div>
-              )}
-            </div>
-
-            {/* Viewport Box */}
-            <div className="w-full relative bg-[var(--surface-primary)] border border-[var(--border-default)] aspect-[3/4] group overflow-hidden">
-
-              {isGenerating ? (
-                <div className="absolute inset-0 flex flex-col items-center justify-center p-8 text-center bg-[var(--background)]">
-                  <div className="w-full max-w-sm">
-                    <div className="flex justify-between text-[10px] font-mono text-[var(--text-secondary)] mb-2 uppercase border-b border-[var(--border-subtle)] pb-2">
-                       <span>{generationPhase === 'queued' ? 'SYS_QUEUE' : generationPhase === 'processing' ? 'SYS_RENDER' : 'SYS_UPLOAD'}</span>
-                       <span>{elapsedSeconds.toFixed(1)}s</span>
-                    </div>
-                    <div className="text-left text-[10px] font-mono text-[var(--text-muted)] mb-4 min-h-[40px]">
-                      &gt; {progressDetail || 'INITIALIZING NEURAL COMPOSITING...'}
-                    </div>
-                    <div className="h-[1px] w-full bg-[var(--border-subtle)] relative">
-                      <div
-                        className="absolute left-0 top-0 bottom-0 bg-white transition-all duration-300"
-                        style={{ width: `${Math.max(progressPct, 1)}%` }}
-                      />
-                    </div>
-                    <div className="text-right text-[10px] font-mono text-white mt-2">
-                      {progressPct}%
-                    </div>
-                  </div>
-                </div>
-              ) : generatedImageUrl ? (
-                // eslint-disable-next-line @next/next/no-img-element
+              <div
+                style={{
+                  position: 'relative',
+                  width: '100%',
+                  maxWidth: 520,
+                  margin: '0 auto',
+                  aspectRatio: '3/4',
+                  borderRadius: 4,
+                  overflow: 'hidden',
+                  boxShadow: '0 32px 80px rgba(0,0,0,0.55), inset 0 0 0 1px rgba(201,168,76,0.12)',
+                }}
+              >
+                {/* After (full render) */}
+                {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
                   src={generatedImageUrl}
-                  alt="Generated Try-On Result"
-                  className="w-full h-full object-cover transition-opacity duration-1000 animate-in fade-in grayscale hover:grayscale-0"
+                  alt=""
+                  style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }}
                 />
-              ) : (
-                <div className="absolute inset-0 flex flex-col items-center justify-center bg-transparent transition-all duration-500 border border-dashed border-[var(--border-subtle)] m-4">
-                  <div className="w-4 h-4 bg-white mb-6" />
-                  <p className="text-white text-xs tracking-cinematic uppercase">Awaiting Execution</p>
-                  <p className="text-[var(--text-muted)] text-[10px] font-mono uppercase tracking-widest mt-4 text-center max-w-[250px]">
-                    SELECT_ITEM &amp; EXECUTE RENDER
-                  </p>
+                {/* Before (portrait) clipped */}
+                <div
+                  style={{
+                    position: 'absolute',
+                    inset: 0,
+                    width: `${compareSlider}%`,
+                    overflow: 'hidden',
+                    borderRight: '2px solid rgba(201,168,76,0.85)',
+                    boxShadow: '4px 0 24px rgba(0,0,0,0.35)',
+                  }}
+                >
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={beforePhotoDisplayUrl ?? `data:image/jpeg;base64,${makePlaceholderPhotoB64()}`}
+                    alt=""
+                    style={{
+                      position: 'absolute',
+                      left: 0,
+                      top: 0,
+                      width: '100%',
+                      height: '100%',
+                      objectFit: 'cover',
+                      minWidth: '100%',
+                      minHeight: '100%',
+                    }}
+                  />
                 </div>
+                <div
+                  style={{
+                    position: 'absolute',
+                    bottom: 12,
+                    left: 12,
+                    right: 12,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 10,
+                  }}
+                >
+                  <span className="label-caps" style={{ fontSize: 8, color: 'rgba(255,255,255,0.75)', width: 56 }}>Portrait</span>
+                  <input
+                    type="range"
+                    min={0}
+                    max={100}
+                    value={compareSlider}
+                    onChange={(e) => setCompareSlider(Number(e.target.value))}
+                    aria-label="Compare before and after"
+                    style={{ flex: 1, accentColor: '#c9a84c' }}
+                  />
+                  <span className="label-caps" style={{ fontSize: 8, color: 'rgba(255,255,255,0.75)', width: 56, textAlign: 'right' }}>Atelier</span>
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'stretch', justifyContent: 'center', gap: 20 }}>
+                <div
+                  style={{
+                    minWidth: 200,
+                    padding: '20px 24px',
+                    background: 'linear-gradient(145deg, rgba(201,168,76,0.08), rgba(24,17,23,0.9))',
+                    border: '1px solid rgba(201,168,76,0.35)',
+                    borderRadius: 4,
+                    boxShadow: '0 0 40px rgba(201,168,76,0.06)',
+                  }}
+                >
+                  <p className="label-caps" style={{ fontSize: 8, letterSpacing: '0.18em', color: 'var(--gold-dim)', marginBottom: 8 }}>Fit intelligence</p>
+                  <p
+                    className="luxury-fit-score"
+                    style={{
+                      fontFamily: 'var(--font-mono, ui-monospace)',
+                      fontSize: 42,
+                      fontWeight: 300,
+                      margin: 0,
+                      lineHeight: 1,
+                      background: 'linear-gradient(110deg, #f0e6d2 0%, #c9a84c 40%, #e8dcc4 55%, #c9a84c 75%, #f5f0e6 100%)',
+                      backgroundSize: '220% 100%',
+                      WebkitBackgroundClip: 'text',
+                      backgroundClip: 'text',
+                      color: 'transparent',
+                      animation: 'goldShimmer 3.5s ease-in-out infinite',
+                    }}
+                  >
+                    {fitScoreDisplay.toFixed(1)}
+                  </p>
+                  <p style={{ fontSize: 11, color: 'var(--text-muted)', margin: '10px 0 0' }}>Confidence score — editorial fit</p>
+                </div>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 10, justifyContent: 'center', minWidth: 220 }}>
+                  <button type="button" onClick={downloadFullRender} className="btn-gold" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, fontSize: 10, padding: '12px 20px' }}>
+                    <Download size={14} /> Download full resolution
+                  </button>
+                  <button
+                    type="button"
+                    onClick={shareRender}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: 8,
+                      fontSize: 10,
+                      padding: '12px 20px',
+                      background: 'transparent',
+                      border: '1px solid var(--border-subtle)',
+                      color: 'var(--text-secondary)',
+                      cursor: 'pointer',
+                      letterSpacing: '0.12em',
+                      textTransform: 'uppercase',
+                      fontFamily: 'var(--font-sans)',
+                    }}
+                  >
+                    <Share2 size={14} /> Share
+                  </button>
+                  <button type="button" onClick={tryAnotherGarment} style={{ fontSize: 10, padding: '10px', background: 'none', border: 'none', color: 'var(--gold-dim)', cursor: 'pointer', letterSpacing: '0.14em', textTransform: 'uppercase' }}>
+                    Try another garment
+                  </button>
+                </div>
+              </div>
+
+              {generatedThumbUrl && (
+                <p className="label-caps" style={{ fontSize: 8, color: 'var(--text-muted)', textAlign: 'center', opacity: 0.7 }}>
+                  Preview optimized for UI — full resolution available via download
+                </p>
               )}
 
+              <style>{`
+                @keyframes goldShimmer {
+                  0%, 100% { background-position: 0% 50%; }
+                  50% { background-position: 100% 50%; }
+                }
+              `}</style>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* ── TOP NAVIGATION BAR ──────────────────────────────── */}
+      <header style={{
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        padding: '0 32px', height: 56,
+        borderBottom: '1px solid var(--border-subtle)',
+        background: 'rgba(24,17,23,0.85)',
+        backdropFilter: 'blur(16px)',
+        position: 'sticky', top: 0, zIndex: 50, flexShrink: 0,
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 20 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ color: 'var(--gold)', fontSize: 12 }}>✦</span>
+            <span className="label-caps" style={{ fontSize: 10, letterSpacing: '0.2em' }}>AI-KART / ATELIER</span>
+          </div>
+          <div style={{ width: 1, height: 14, background: 'var(--border-subtle)' }} />
+          <span className="label-caps" style={{ fontSize: 9, color: 'var(--text-muted)' }}>Virtual Try-On Engine</span>
+        </div>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <input ref={portraitInputRef} type="file" accept="image/*" capture="environment" className="sr-only" style={{ position: 'absolute', width: 1, height: 1, opacity: 0 }} onChange={handlePortraitFile} />
+          <button
+            type="button"
+            onClick={() => portraitInputRef.current?.click()}
+            className="btn-ghost"
+            style={{ fontSize: 9, padding: '7px 14px', display: 'flex', alignItems: 'center', gap: 6 }}
+          >
+            <Upload size={11} />
+            PORTRAIT
+          </button>
+          {bodyProfile ? (
+            <motion.div initial={{ opacity: 0, x: 10 }} animate={{ opacity: 1, x: 0 }}
+              style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 14px', background: 'rgba(201,168,76,0.06)', border: '1px solid var(--border-gold)' }}
+            >
+              <div style={{ width: 5, height: 5, borderRadius: '50%', background: 'var(--gold)', boxShadow: '0 0 8px var(--gold)' }} />
+              <span className="label-caps" style={{ fontSize: 9, color: 'var(--gold-dim)' }}>PROFILE — {bodyProfile.heightCm}CM CALIBRATED</span>
+            </motion.div>
+          ) : (
+            <button onClick={() => setShowCalibration(true)} className="btn-ghost"
+              style={{ fontSize: 9, padding: '7px 16px', display: 'flex', alignItems: 'center', gap: 7 }}
+            >
+              <Camera size={11} />
+              CREATE DIGITAL PROFILE
+            </button>
+          )}
+        </div>
+      </header>
+
+      {/* ── THREE-PANEL WORKSPACE ────────────────────────────── */}
+      <div style={{ flex: 1, display: 'grid', gridTemplateColumns: '340px 1fr 300px', overflow: 'hidden', height: 'calc(100vh - 56px)' }}>
+
+        {/* ══════════════════════════════════════════════════════
+            LEFT: LUXURY COLLECTION INDEX
+            ══════════════════════════════════════════════════════ */}
+        <aside style={{ borderRight: '1px solid var(--border-subtle)', background: 'var(--surface-low)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+
+          {/* ── Panel Header ─── */}
+          <div style={{ padding: '16px 16px 0', borderBottom: '1px solid var(--border-subtle)', flexShrink: 0 }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+              <span className="label-caps" style={{ fontSize: 9, color: 'var(--gold-dim)' }}>COLLECTION INDEX</span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+                {/* View toggle */}
+                {(['grid', 'list'] as ViewMode[]).map(mode => (
+                  <button key={mode} onClick={() => setViewMode(mode)}
+                    style={{
+                      width: 28, height: 28, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      background: viewMode === mode ? 'rgba(201,168,76,0.1)' : 'transparent',
+                      border: viewMode === mode ? '1px solid var(--border-gold)' : '1px solid transparent',
+                      color: viewMode === mode ? 'var(--gold)' : 'var(--text-muted)',
+                      cursor: 'pointer', transition: 'all 0.2s',
+                    }}
+                  >
+                    {mode === 'grid' ? <Grid2X2 size={11} /> : <List size={11} />}
+                  </button>
+                ))}
+                {/* Upload */}
+                <input ref={fileInputRef} type="file" accept="image/*" onChange={handleFileUpload} style={{ display: 'none' }} />
+                <button onClick={() => fileInputRef.current?.click()}
+                  title="Upload custom garment"
+                  style={{
+                    width: 28, height: 28, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    background: 'transparent', border: '1px solid transparent',
+                    color: 'var(--text-muted)', cursor: 'pointer', transition: 'all 0.2s',
+                  }}
+                  onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--border-gold)'; e.currentTarget.style.color = 'var(--gold)'; }}
+                  onMouseLeave={e => { e.currentTarget.style.borderColor = 'transparent'; e.currentTarget.style.color = 'var(--text-muted)'; }}
+                >
+                  <Upload size={11} />
+                </button>
+              </div>
             </div>
 
-          </motion.div>
+            {/* ── Search ─── */}
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: 8,
+              padding: '8px 12px', marginBottom: 12,
+              background: 'var(--surface-container)',
+              border: `1px solid ${searchFocused ? 'var(--border-gold)' : 'var(--border-subtle)'}`,
+              transition: 'border-color 0.2s',
+            }}>
+              <Search size={11} style={{ color: searchFocused ? 'var(--gold)' : 'var(--text-muted)', flexShrink: 0, transition: 'color 0.2s' }} />
+              <input
+                value={searchQuery}
+                onChange={e => setSearchQuery(e.target.value)}
+                onFocus={() => setSearchFocused(true)}
+                onBlur={() => setSearchFocused(false)}
+                placeholder="Search collection..."
+                style={{
+                  flex: 1, background: 'none', border: 'none', outline: 'none',
+                  fontSize: 11, color: 'var(--text-primary)', fontFamily: 'var(--font-sans)',
+                  letterSpacing: '0.03em',
+                }}
+              />
+              {searchQuery && (
+                <button onClick={() => setSearchQuery('')}
+                  style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 14, lineHeight: 1, padding: 0 }}>×</button>
+              )}
+            </div>
 
-          {/* Right Column: Size Intelligence Engine */}
-          <motion.div variants={itemVariants} className="lg:col-span-3 flex justify-end">
-            <AnimatePresence mode="wait">
-              <FitPanel catalogEntry={GARMENT_CATALOG[activeCatalogIdx] ?? null} />
+            {/* ── Category Filter Tabs ─── */}
+            <div style={{ display: 'flex', gap: 0, overflowX: 'auto', paddingBottom: 0, scrollbarWidth: 'none' }}>
+              {CATEGORIES.filter(c => c.count > 0 || c.key === 'all').map(cat => (
+                <button key={cat.key} onClick={() => setActiveCategory(cat.key as CategoryKey)}
+                  style={{
+                    flexShrink: 0, padding: '9px 10px',
+                    borderBottom: activeCategory === cat.key ? '2px solid var(--gold)' : '2px solid transparent',
+                    background: 'transparent', cursor: 'pointer',
+                    color: activeCategory === cat.key ? 'var(--gold)' : 'var(--text-muted)',
+                    fontFamily: 'var(--font-sans)', fontWeight: 500, letterSpacing: '0.1em',
+                    fontSize: 9, textTransform: 'uppercase', transition: 'all 0.2s',
+                    display: 'flex', alignItems: 'center', gap: 5,
+                  }}
+                >
+                  {cat.label}
+                  {cat.count > 0 && (
+                    <span style={{
+                      fontSize: 8, padding: '1px 4px',
+                      background: activeCategory === cat.key ? 'rgba(201,168,76,0.2)' : 'var(--surface-container)',
+                      color: activeCategory === cat.key ? 'var(--gold)' : 'var(--text-dim)',
+                      borderRadius: 2,
+                    }}>
+                      {cat.key === 'all' ? GARMENT_CATALOG.length + uploadedGarments.length : cat.count}
+                    </span>
+                  )}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* ── Garment Cards ─── */}
+          <div style={{ flex: 1, overflowY: 'auto', padding: viewMode === 'grid' ? '12px' : '0', scrollbarWidth: 'thin', scrollbarColor: 'var(--border-subtle) transparent' }}>
+            <AnimatePresence mode="popLayout">
+              {filteredCatalog.length === 0 ? (
+                <motion.div key="empty" initial={{ opacity: 0 }} animate={{ opacity: 1 }}
+                  style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: 160, gap: 8 }}
+                >
+                  <span className="label-caps" style={{ fontSize: 9, color: 'var(--text-muted)' }}>No items match</span>
+                </motion.div>
+              ) : viewMode === 'grid' ? (
+                /* ── GRID VIEW ─── */
+                <motion.div key="grid" initial={{ opacity: 0 }} animate={{ opacity: 1 }}
+                  style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}
+                >
+                  {filteredCatalog.map((entry, i) => {
+                    const isActive = activeCatalogIdx === entry.originalIdx;
+                    return (
+                      <motion.button key={`${entry.name}-${i}`}
+                        layout
+                        initial={{ opacity: 0, scale: 0.96 }}
+                        animate={{ opacity: 1, scale: 1 }}
+                        transition={{ delay: i * 0.05, duration: 0.25 }}
+                        onClick={() => selectGarment(entry.originalIdx, entry.displayUrl)}
+                        whileHover={{ y: -2 }}
+                        style={{
+                          display: 'flex', flexDirection: 'column',
+                          background: isActive ? 'rgba(201,168,76,0.07)' : 'var(--surface-container)',
+                          border: isActive ? '1px solid var(--border-gold)' : '1px solid var(--border-subtle)',
+                          cursor: 'pointer', overflow: 'hidden', textAlign: 'left',
+                          transition: 'border-color 0.2s, background 0.2s', position: 'relative',
+                        }}
+                      >
+                        {/* Category badge */}
+                        <div style={{ position: 'absolute', top: 6, left: 6, zIndex: 5, padding: '2px 6px', background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)' }}>
+                          <span className="label-caps" style={{ fontSize: 7, color: isActive ? 'var(--gold)' : 'var(--text-muted)' }}>
+                            {entry.category?.toUpperCase()}
+                          </span>
+                        </div>
+                        {/* Active dot */}
+                        {isActive && (
+                          <div style={{ position: 'absolute', top: 6, right: 6, zIndex: 5, width: 5, height: 5, borderRadius: '50%', background: 'var(--gold)', boxShadow: '0 0 8px var(--gold)' }} />
+                        )}
+                        {/* Garment image — portrait format */}
+                        <div style={{ width: '100%', aspectRatio: '2/3', overflow: 'hidden', background: 'var(--surface-highest)', position: 'relative' }}>
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img
+                            src={entry.displayUrl}
+                            alt={entry.name}
+                            style={{
+                              width: '100%', height: '100%', objectFit: 'cover',
+                              filter: isActive ? 'none' : 'grayscale(20%) brightness(0.9)',
+                              transition: 'filter 0.35s',
+                            }}
+                            onError={e => {
+                              e.currentTarget.style.display = 'none';
+                              (e.currentTarget.nextElementSibling as HTMLElement | null)?.style && ((e.currentTarget.nextElementSibling as HTMLElement).style.display = 'flex');
+                            }}
+                          />
+                          {/* Fallback silhouette */}
+                          <div style={{ display: 'none', position: 'absolute', inset: 0, alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 6 }}>
+                            <div style={{ fontSize: 28, opacity: 0.2 }}>👕</div>
+                            <span className="label-caps" style={{ fontSize: 7, color: 'var(--text-muted)' }}>3D MODEL</span>
+                          </div>
+                          {/* Gold shimmer overlay on active */}
+                          {isActive && (
+                            <div style={{ position: 'absolute', inset: 0, background: 'linear-gradient(135deg, rgba(201,168,76,0.08), transparent)', pointerEvents: 'none' }} />
+                          )}
+                        </div>
+                        {/* Name row */}
+                        <div style={{ padding: '8px 10px 10px' }}>
+                          <div style={{ fontSize: 11, fontWeight: 500, color: isActive ? 'var(--text-primary)' : 'var(--text-secondary)', letterSpacing: '0.02em', lineHeight: 1.3, marginBottom: 3 }}>
+                            {entry.name}
+                          </div>
+                          {entry.isCustom && (
+                            <span className="label-caps" style={{ fontSize: 7, color: 'var(--text-muted)' }}>CUSTOM UPLOAD</span>
+                          )}
+                        </div>
+                      </motion.button>
+                    );
+                  })}
+                </motion.div>
+              ) : (
+                /* ── LIST VIEW ─── */
+                <motion.div key="list" initial={{ opacity: 0 }} animate={{ opacity: 1 }}
+                  style={{ display: 'flex', flexDirection: 'column' }}
+                >
+                  {filteredCatalog.map((entry, i) => {
+                    const isActive = activeCatalogIdx === entry.originalIdx;
+                    return (
+                      <motion.button key={`${entry.name}-${i}`}
+                        layout
+                        initial={{ opacity: 0, x: -8 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        transition={{ delay: i * 0.04 }}
+                        onClick={() => selectGarment(entry.originalIdx, entry.displayUrl)}
+                        whileHover={{ x: 2 }}
+                        style={{
+                          display: 'flex', alignItems: 'center', gap: 12,
+                          padding: '12px 16px',
+                          background: isActive ? 'var(--surface-container)' : 'transparent',
+                          borderLeft: isActive ? '2px solid var(--gold)' : '2px solid transparent',
+                          borderBottom: '1px solid var(--border-subtle)',
+                          cursor: 'pointer', textAlign: 'left',
+                          transition: 'all 0.2s',
+                        }}
+                      >
+                        {/* Thumbnail */}
+                        <div style={{ width: 52, height: 68, flexShrink: 0, overflow: 'hidden', background: 'var(--surface-highest)', position: 'relative' }}>
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img
+                            src={entry.displayUrl}
+                            alt={entry.name}
+                            style={{ width: '100%', height: '100%', objectFit: 'cover', filter: isActive ? 'none' : 'grayscale(60%)',  transition: 'filter 0.3s' }}
+                            onError={e => { e.currentTarget.style.opacity = '0'; }}
+                          />
+                        </div>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontSize: 12, fontWeight: 500, color: isActive ? 'var(--text-primary)' : 'var(--text-secondary)', marginBottom: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {entry.name}
+                          </div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                            <span className="label-caps" style={{ fontSize: 8, color: isActive ? 'var(--gold-dim)' : 'var(--text-muted)' }}>
+                              {entry.category?.toUpperCase()}
+                            </span>
+                            {entry.isCustom && (
+                              <>
+                                <span style={{ color: 'var(--border-subtle)', fontSize: 8 }}>·</span>
+                                <span className="label-caps" style={{ fontSize: 8, color: 'var(--text-muted)' }}>CUSTOM</span>
+                              </>
+                            )}
+                          </div>
+                        </div>
+                        {isActive && <div style={{ width: 4, height: 4, borderRadius: '50%', background: 'var(--gold)', flexShrink: 0 }} />}
+                      </motion.button>
+                    );
+                  })}
+                </motion.div>
+              )}
             </AnimatePresence>
-          </motion.div>
+          </div>
 
+          {/* ── Footer stats ─── */}
+          <div style={{ padding: '10px 16px', borderTop: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0, background: 'var(--surface-container)' }}>
+            <span className="label-caps" style={{ fontSize: 8 }}>{filteredCatalog.length} items</span>
+            {uploadedGarments.length > 0 && (
+              <span className="label-caps" style={{ fontSize: 8, color: 'var(--gold-dim)' }}>{uploadedGarments.length} custom</span>
+            )}
+          </div>
+        </aside>
+
+        {/* ══════════════════════════════════════════════════════
+            CENTER: NEURAL VIEWPORT
+            ══════════════════════════════════════════════════════ */}
+        <div style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden', background: 'var(--surface-dim)' }}>
+          {/* Control bar */}
+          <div style={{ padding: '10px 20px', borderBottom: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'var(--surface-low)', flexShrink: 0 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <button onClick={handleGenerateFit} disabled={isGenerating} className="btn-gold"
+                style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 10, padding: '9px 22px', opacity: isGenerating ? 0.7 : 1 }}
+              >
+                <Sparkles size={12} />
+                {isGenerating ? 'SYNTHESIZING...' : 'EXECUTE RENDER'}
+              </button>
+              {generatedImageUrl && !isGenerating && (
+                <button onClick={() => setGeneratedImageUrl(null)}
+                  style={{ display: 'flex', alignItems: 'center', gap: 7, background: 'transparent', border: '1px solid var(--border-default)', color: 'var(--text-muted)', fontSize: 9, cursor: 'pointer', padding: '8px 14px', letterSpacing: '0.12em', fontFamily: 'var(--font-sans)', textTransform: 'uppercase', transition: 'all 0.2s' }}
+                >
+                  <RotateCcw size={9} /> RESET
+                </button>
+              )}
+            </div>
+            {bodyProfile && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <CheckCircle2 size={11} style={{ color: 'var(--gold)' }} />
+                <span className="label-caps" style={{ fontSize: 9, color: 'var(--gold-dim)' }}>NEURAL PROFILE ACTIVE</span>
+              </div>
+            )}
+          </div>
+
+          {/* Viewport */}
+          <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 28, overflow: 'hidden' }}>
+            <div style={{ width: '100%', maxWidth: 380, aspectRatio: '3/4', position: 'relative', overflow: 'hidden', background: 'var(--surface-container)', border: '1px solid var(--border-subtle)', boxShadow: '0 0 60px rgba(0,0,0,0.5), inset 0 1px 0 rgba(201,168,76,0.06)' }}>
+              {/* Corner reticles */}
+              {(['tl','tr','bl','br'] as const).map(c => (
+                <div key={c} style={{ position: 'absolute', width: 14, height: 14, [c.includes('t') ? 'top' : 'bottom']: 10, [c.includes('l') ? 'left' : 'right']: 10, borderTop: c.includes('t') ? '1px solid rgba(201,168,76,0.45)' : undefined, borderBottom: c.includes('b') ? '1px solid rgba(201,168,76,0.45)' : undefined, borderLeft: c.includes('l') ? '1px solid rgba(201,168,76,0.45)' : undefined, borderRight: c.includes('r') ? '1px solid rgba(201,168,76,0.45)' : undefined, pointerEvents: 'none', zIndex: 10 }} />
+              ))}
+
+              <AnimatePresence mode="wait">
+                {isGenerating ? (
+                  <motion.div key="generating" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+                    style={{ position: 'absolute', inset: 0, background: '#0D0A10', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: 28, overflow: 'hidden' }}
+                  >
+                    <motion.div style={{ position: 'absolute', left: 0, right: 0, height: 1, background: 'linear-gradient(90deg, transparent, var(--gold-dim), transparent)', opacity: 0.6 }} animate={{ top: ['0%', '100%'] }} transition={{ duration: 2.5, repeat: Infinity, ease: 'linear' }} />
+                    <div style={{ position: 'relative', zIndex: 10, width: '100%', maxWidth: 220, textAlign: 'center' }}>
+                      <motion.div animate={{ scale: [1, 1.4, 1], opacity: [1, 0.5, 1] }} transition={{ duration: 1.2, repeat: Infinity }} style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--gold)', margin: '0 auto 22px', boxShadow: '0 0 20px var(--gold-dim)' }} />
+                      <div className="label-caps" style={{ color: 'var(--gold-dim)', fontSize: 10, marginBottom: 14 }}>
+                        {generationPhase === 'queued' ? 'INITIALIZING ENGINE' : generationPhase === 'processing' ? 'NEURAL COMPOSITOR ACTIVE' : 'HOLOGRAPHIC REVEAL'}
+                      </div>
+                      <div style={{ fontSize: 10, color: 'rgba(201,168,76,0.4)', fontFamily: 'var(--font-mono)', marginBottom: 20, minHeight: 24 }}>
+                        {'> '}{progressDetail || 'Loading neural render engine...'}
+                      </div>
+                      <div style={{ height: 1, background: 'rgba(255,255,255,0.06)', position: 'relative', marginBottom: 8 }}>
+                        <motion.div style={{ position: 'absolute', left: 0, top: 0, bottom: 0, background: 'linear-gradient(90deg, var(--gold-deep), var(--gold))' }} animate={{ width: `${Math.max(progressPct, 2)}%` }} transition={{ ease: 'linear', duration: 0.3 }} />
+                      </div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                        <span className="label-caps" style={{ fontSize: 8, color: 'var(--text-dim)' }}>RTX LOCAL</span>
+                        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--gold-dim)' }}>{progressPct}% · {elapsedSeconds}s</span>
+                      </div>
+                    </div>
+                  </motion.div>
+                ) : generatedImageUrl ? (
+                  <motion.div key="result" initial={{ opacity: 0, scale: 1.02 }} animate={{ opacity: 1, scale: 1 }} transition={{ duration: 0.8, ease: [0.16, 1, 0.3, 1] }} style={{ position: 'absolute', inset: 0 }}>
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={generatedImageUrl} alt="Result" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                    <div style={{ position: 'absolute', inset: 0, background: 'linear-gradient(135deg, rgba(201,168,76,0.08), transparent)', pointerEvents: 'none' }} />
+                  </motion.div>
+                ) : (
+                  <motion.div key="idle" initial={{ opacity: 0 }} animate={{ opacity: 1 }} style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
+                    {activeGarment && (
+                      <div style={{ position: 'absolute', inset: 0 }}>
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={activeGarment} alt="Garment" style={{ width: '100%', height: '100%', objectFit: 'cover', filter: 'grayscale(80%) brightness(0.35)' }} />
+                      </div>
+                    )}
+                    <div style={{ position: 'relative', zIndex: 5, textAlign: 'center' }}>
+                      <div style={{ width: 1, height: 36, background: 'linear-gradient(to bottom, transparent, var(--gold-dim))', margin: '0 auto 18px' }} />
+                      <div className="label-caps" style={{ color: 'var(--text-primary)', marginBottom: 6 }}>Awaiting Execution</div>
+                      <div className="label-caps" style={{ color: 'var(--text-muted)', fontSize: 8 }}>Select an item & execute render</div>
+                      <div style={{ width: 1, height: 36, background: 'linear-gradient(to bottom, var(--gold-dim), transparent)', margin: '18px auto 0' }} />
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+          </div>
+
+          {/* Active garment label */}
+          <div style={{ padding: '10px 20px', borderTop: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'center', gap: 10, background: 'var(--surface-low)', flexShrink: 0 }}>
+            <span className="label-caps" style={{ fontSize: 8, color: 'var(--text-muted)' }}>ACTIVE</span>
+            <div style={{ width: 1, height: 10, background: 'var(--border-subtle)' }} />
+            <span className="label-caps" style={{ fontSize: 9, color: 'var(--text-secondary)' }}>
+              {activeEntry?.name ?? 'Custom Upload'}
+            </span>
+            {activeEntry && (
+              <>
+                <div style={{ width: 1, height: 10, background: 'var(--border-subtle)' }} />
+                <span className="label-caps" style={{ fontSize: 8, color: 'var(--text-muted)' }}>{activeEntry.category?.toUpperCase()}</span>
+              </>
+            )}
+          </div>
         </div>
-      </motion.div>
+
+        {/* ══════════════════════════════════════════════════════
+            RIGHT: FIT INTELLIGENCE PANEL
+            ══════════════════════════════════════════════════════ */}
+        <aside style={{ borderLeft: '1px solid var(--border-subtle)', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+          <AnimatePresence mode="wait">
+            <FitPanel catalogEntry={GARMENT_CATALOG[activeCatalogIdx] ?? null} />
+          </AnimatePresence>
+        </aside>
+      </div>
     </main>
   );
 }

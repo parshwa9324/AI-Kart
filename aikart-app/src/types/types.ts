@@ -359,6 +359,10 @@ export interface TryOnRenderResponse {
     status: 'queued' | 'processing' | 'completed' | 'failed' | 'retrying' | 'dead';
     /** URL to the rendered try-on image (available when status = completed) */
     imageUrl?: string;
+    /** Web-optimized thumbnail for instant UI display */
+    thumbUrl?: string;
+    /** GPU worker detail line (e.g. diffusion step) */
+    progressDetail?: string;
     /** Size recommendation (if requested) */
     recommendation?: SizeRecommendation;
     /** Estimated processing time in seconds */
