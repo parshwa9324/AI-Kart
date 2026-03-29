@@ -21,7 +21,7 @@ import json
 import random
 import base64
 from io import BytesIO
-from typing import Optional, Tuple
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -58,13 +58,13 @@ def safe_redis_expire(redis_conn, name: str, seconds: int) -> None:
 # Global Model State (Warm Cache)
 # ──────────────────────────────────────────────────────────────────────────────
 
-_VTON_PIPELINE = None   # Local diffusion pipeline (IDM-VTON / SDXL Inpaint bundle)
+_VTON_PIPELINE = None   # Local SDXL inpaint pipeline (mirrors local_vton_engine cache)
 _MODEL_LOAD_TIME = None
 
 
 def _load_vton_model(progress: "ProgressReporter" = None):
     """
-    Load VTry-on pipeline (IDM-VTON HF weights) into GPU with CPU offload on 6GB cards.
+    Load SDXL inpainting pipeline with CPU offload on 6GB cards.
     Called once — subsequent calls return the warm cached pipeline.
     """
     global _VTON_PIPELINE, _MODEL_LOAD_TIME
@@ -135,42 +135,6 @@ class ProgressReporter:
         logger.info(f"[WORKER] Job {self.job_id}: {pct}% — {detail}")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# VTON Inference Engine
-# ──────────────────────────────────────────────────────────────────────────────
-
-def _run_vton_inference(
-    model,
-    person_image_b64: str,
-    garment_id: str,
-    progress: ProgressReporter,
-    garment_image_b64: Optional[str] = None,
-) -> Tuple[str, str]:
-    """
-    Run local GPU virtual try-on (IDM-VTON checkpoint, SDXL Inpaint forward).
-
-    The model arg is the loaded diffusers pipeline (same as local_vton_engine cache).
-    Returns (full_image_url, thumbnail_url).
-    """
-    from local_vton_engine import INFERENCE_STEPS, GUIDANCE_SCALE, run_local_tryon
-
-    def _cb(pct: int, detail: str = ""):
-        progress.update(pct, detail)
-
-    progress.update(15, "Preprocessing inputs for local GPU inference...")
-
-    return run_local_tryon(
-        person_image_b64=person_image_b64,
-        garment_image_b64=garment_image_b64,
-        garment_category="upperbody",
-        n_steps=INFERENCE_STEPS,
-        guidance_scale=GUIDANCE_SCALE,
-        progress_cb=_cb,
-    )
-
-
-
-
 def _generate_recommendation(garment_id: str) -> dict:
     """Generate size recommendation. Production: calls SizeEngine with real measurements."""
     return {
@@ -235,11 +199,25 @@ def run_tryon_inference(
         logger.info(f"[WORKER] Starting job {job_id} (brand: {brand_id}, attempt: {attempt})")
 
         # ── Step 2: Load model (warm cache on subsequent calls) ───────────────
-        progress.update(5, "Loading VTON model into GPU VRAM")
-        model = _load_vton_model()
+        progress.update(5, "Loading SDXL inpaint into GPU VRAM")
+        _load_vton_model(progress)
 
         # ── Step 3: Run inference with live progress ──────────────────────────
-        image_url, thumb_url = _run_vton_inference(model, user_photo_b64, garment_id, progress)
+        from local_vton_engine import INFERENCE_STEPS, GUIDANCE_SCALE, run_local_tryon
+
+        result = run_local_tryon(
+            person_image_b64=user_photo_b64,
+            garment_image_b64=None,
+            garment_category="upperbody",
+            n_steps=INFERENCE_STEPS,
+            guidance_scale=GUIDANCE_SCALE,
+            progress_cb=progress.update,
+        )
+        if isinstance(result, tuple) and len(result) >= 2:
+            image_url, thumb_url = result[0], result[1]
+        else:
+            image_url = result if not isinstance(result, tuple) else result[0]
+            thumb_url = None
 
         # ── Step 4: Store result ──────────────────────────────────────────────
         update_data = {
@@ -277,6 +255,7 @@ def run_tryon_inference(
                 LOCAL_JOBS[job_id]["imageUrl"] = image_url
                 LOCAL_JOBS[job_id]["thumbUrl"] = thumb_url
                 LOCAL_JOBS[job_id]["progressPct"] = 100
+                LOCAL_JOBS[job_id]["progressDetail"] = "Render complete"
                 if recommendation:
                     LOCAL_JOBS[job_id]["recommendation"] = recommendation
         except Exception:

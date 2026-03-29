@@ -12,6 +12,9 @@ Architecture:
 """
 
 import os
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Redis Configuration (Job Queue + Rate Limiting + Session Store)
@@ -138,8 +141,44 @@ BRAND_CAPABILITIES = {
 # ──────────────────────────────────────────────────────────────────────────────
 # Local Dev Flags
 # ──────────────────────────────────────────────────────────────────────────────
-USE_MOCK_ML = not bool(FAL_AI_KEY or REPLICATE_API_KEY)
+
+# Detect local GPU — used by local_vton_engine.py
+def _has_local_gpu() -> bool:
+    try:
+        import torch
+        return torch.cuda.is_available()
+    except ImportError:
+        return False
+
+USE_LOCAL_GPU = os.getenv("USE_LOCAL_GPU", "auto").lower()
+if USE_LOCAL_GPU == "auto":
+    USE_LOCAL_GPU = _has_local_gpu()
+else:
+    USE_LOCAL_GPU = USE_LOCAL_GPU == "true"
+
+# Mock mode: only when no GPU AND no cloud API keys configured
+# Auth enforcement — MUST be True in production
+# When True: unauthenticated requests get 401 instead of brand_default fallback
+ENFORCE_AUTH = os.getenv("ENFORCE_AUTH", "false").lower() == "true"
+
+USE_MOCK_ML = not USE_LOCAL_GPU and not bool(FAL_AI_KEY or REPLICATE_API_KEY)
 ENFORCE_RATE_LIMITS = os.getenv("ENFORCE_RATE_LIMITS", "false").lower() == "true"
+
+# GPU concurrency limit — prevents VRAM OOM crashes
+# Set to 1 for single-GPU machines (RTX 3060/4050 etc.)
+GPU_MAX_CONCURRENT_RENDERS = int(os.getenv("GPU_MAX_CONCURRENT_RENDERS", "1"))
+
+# Local result storage — try-on images saved here instead of returning raw base64
+RESULT_CACHE_DIR = os.getenv("RESULT_CACHE_DIR", "./result_cache")
+RESULT_BASE_URL  = os.getenv("RESULT_BASE_URL",  "http://localhost:8001/renders")
+
+# Virtual try-on — SDXL 1.0 inpainting (standard diffusers hub layout).
+VTON_MODEL_ID = os.getenv(
+    "VTON_MODEL_ID",
+    "diffusers/stable-diffusion-xl-1.0-inpainting-0.1",
+)
+# Skip blocking warm-up on startup (faster CI / when GPU unavailable)
+VTON_SKIP_STARTUP_WARMUP = os.getenv("VTON_SKIP_STARTUP_WARMUP", "false").lower() == "true"
 
 MOCK_TRYON_IMAGES = [
     "https://images.unsplash.com/photo-1515886657613-9f3515b0c78f?w=800&q=80",
