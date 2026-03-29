@@ -61,6 +61,38 @@ function preloadImage(url: string): Promise<void> {
   });
 }
 
+type TryOnTelemetryEvent =
+  | 'render_start'
+  | 'render_success'
+  | 'render_failure'
+  | 'render_progress_milestone'
+  | 'history_restore'
+  | 'action_download'
+  | 'action_share'
+  | 'presentation_mode_toggled';
+
+type TelemetryPayload = Record<string, string | number | boolean | null | undefined>;
+
+function emitTryOnTelemetry(event: TryOnTelemetryEvent, payload: TelemetryPayload): void {
+  const packet = {
+    event,
+    ts: new Date().toISOString(),
+    payload,
+  };
+  try {
+    window.dispatchEvent(new CustomEvent('aikart:tryon:telemetry', { detail: packet }));
+    const key = 'aikart_tryon_telemetry_buffer';
+    const existingRaw = localStorage.getItem(key);
+    const existing = existingRaw ? (JSON.parse(existingRaw) as unknown[]) : [];
+    const next = [...existing.slice(-199), packet];
+    localStorage.setItem(key, JSON.stringify(next));
+  } catch {
+    // telemetry must never affect UX
+  }
+  // Keep this for local operator visibility in dev tools
+  console.info('[TRYON_TELEMETRY]', packet);
+}
+
 export default function TryOnPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const compareFrameRef = useRef<HTMLDivElement>(null);
@@ -72,6 +104,8 @@ export default function TryOnPage() {
   const mountedRef = useRef(true);
   const gpuBusyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fitScoreAnimStopRef = useRef<(() => void) | null>(null);
+  const renderStartedAtRef = useRef<number | null>(null);
+  const telemetryMilestonesRef = useRef<Set<number>>(new Set());
 
   const [activeGarment, setActiveGarment]         = useState(GARMENT_CATALOG[0].displayUrl);
   const [showCalibration, setShowCalibration]     = useState(false);
@@ -222,6 +256,15 @@ export default function TryOnPage() {
   const handleGenerateFit = async () => {
     const reqId = ++requestSeqRef.current;
     if (!bodyProfile) { setShowCalibration(true); return; }
+    renderStartedAtRef.current = Date.now();
+    telemetryMilestonesRef.current.clear();
+    emitTryOnTelemetry('render_start', {
+      requestId: reqId,
+      garmentId: GARMENT_CATALOG[activeCatalogIdx]?.defaultSpec?.id ?? 'default',
+      garmentName: activeEntry?.name ?? 'unknown',
+      hasPortrait: Boolean(userPhotoB64),
+      presentationMode,
+    });
     setIsGenerating(true);
     setActiveHistoryUrl(null);
     setGeneratedImageUrl(null);
@@ -236,6 +279,18 @@ export default function TryOnPage() {
       const onProgress: ProgressCallback = (update) => {
         if (!mountedRef.current || reqId !== requestSeqRef.current) return;
         setProgressPct(update.progressPct);
+        const milestones = [25, 50, 75, 95];
+        milestones.forEach((m) => {
+          if (update.progressPct >= m && !telemetryMilestonesRef.current.has(m)) {
+            telemetryMilestonesRef.current.add(m);
+            emitTryOnTelemetry('render_progress_milestone', {
+              requestId: reqId,
+              milestone: m,
+              status: update.status,
+              detail: update.detail ?? null,
+            });
+          }
+        });
         if (update.detail) setProgressDetail(update.detail);
         if (update.status === 'queued') setGenerationPhase('queued');
         else if (update.status === 'processing' || update.status === 'retrying') setGenerationPhase('processing');
@@ -267,6 +322,14 @@ export default function TryOnPage() {
           onUpdate: (v) => setFitScoreDisplay(Math.round(v * 10) / 10),
         });
         fitScoreAnimStopRef.current = controls.stop;
+        emitTryOnTelemetry('render_success', {
+          requestId: reqId,
+          garmentName: activeEntry?.name ?? 'unknown',
+          progressPct: 100,
+          elapsedMs: renderStartedAtRef.current ? Date.now() - renderStartedAtRef.current : null,
+          fitScore: resolvedScore,
+          hasThumb: Boolean(response.thumbUrl),
+        });
         addRenderToHistory({
           imageUrl: response.imageUrl,
           thumbUrl: response.thumbUrl ?? null,
@@ -288,6 +351,11 @@ export default function TryOnPage() {
       } else {
         console.error("Try-On ML Render Failed:", error);
         setActionToast('Render failed. Please retry');
+        emitTryOnTelemetry('render_failure', {
+          requestId: reqId,
+          reason: (error as { message?: string })?.message ?? 'unknown',
+          elapsedMs: renderStartedAtRef.current ? Date.now() - renderStartedAtRef.current : null,
+        });
       }
     } finally {
       if (mountedRef.current && reqId === requestSeqRef.current) {
@@ -353,6 +421,11 @@ export default function TryOnPage() {
         onUpdate: (v) => setFitScoreDisplay(Math.round(v * 10) / 10),
       });
       fitScoreAnimStopRef.current = controls.stop;
+      emitTryOnTelemetry('history_restore', {
+        requestId: reqId,
+        fitScore: item.fitScore,
+        hasThumb: Boolean(item.thumbUrl),
+      });
     })();
   }, [prefersReducedMotion]);
 
@@ -371,6 +444,10 @@ export default function TryOnPage() {
     a.click();
     a.remove();
     setActionToast('Render downloaded');
+    emitTryOnTelemetry('action_download', {
+      garmentName: activeEntry?.name ?? 'unknown',
+      hasRender: Boolean(generatedImageUrl),
+    });
   }, [activeEntry?.name, generatedImageUrl]);
 
   const shareRender = useCallback(async () => {
@@ -380,16 +457,20 @@ export default function TryOnPage() {
       if (navigator.share) {
         await navigator.share({ title: 'AI-Kart Atelier', text: 'Virtual try-on render', url });
         setActionToast('Share sheet opened');
+        emitTryOnTelemetry('action_share', { mode: 'native_share' });
       } else {
         if (!window.isSecureContext || !navigator.clipboard) {
           setActionToast('Secure context required to copy');
+          emitTryOnTelemetry('action_share', { mode: 'clipboard_unavailable' });
           return;
         }
         await navigator.clipboard.writeText(url);
         setActionToast('Render URL copied');
+        emitTryOnTelemetry('action_share', { mode: 'clipboard_copy' });
       }
     } catch {
       setActionToast('Share unavailable');
+      emitTryOnTelemetry('action_share', { mode: 'cancelled_or_blocked' });
     }
   }, [generatedImageUrl]);
 
@@ -886,7 +967,13 @@ export default function TryOnPage() {
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <button
             type="button"
-            onClick={() => setPresentationMode((v) => !v)}
+            onClick={() => {
+              setPresentationMode((v) => {
+                const next = !v;
+                emitTryOnTelemetry('presentation_mode_toggled', { enabled: next });
+                return next;
+              });
+            }}
             className="btn-ghost"
             style={{ fontSize: 9, padding: '7px 12px' }}
             title="Presentation mode. Shortcuts: Ctrl/Cmd+Enter render, Ctrl/Cmd+K search."
