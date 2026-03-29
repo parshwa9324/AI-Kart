@@ -67,6 +67,7 @@ export default function TryOnPage() {
   const resultDialogRef = useRef<HTMLDivElement>(null);
   const closeResultButtonRef = useRef<HTMLButtonElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const lastFocusedRef = useRef<HTMLElement | null>(null);
   const requestSeqRef = useRef(0);
   const mountedRef = useRef(true);
   const gpuBusyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -144,8 +145,13 @@ export default function TryOnPage() {
   useEffect(() => {
     if (!showLuxuryResult) {
       document.body.style.overflow = '';
+      if (lastFocusedRef.current) {
+        lastFocusedRef.current.focus();
+        lastFocusedRef.current = null;
+      }
       return;
     }
+    lastFocusedRef.current = document.activeElement as HTMLElement | null;
     const prevOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
     const t = setTimeout(() => closeResultButtonRef.current?.focus(), 40);
@@ -398,7 +404,32 @@ export default function TryOnPage() {
   }, [uploadedGarments.length, selectGarment]);
 
   useEffect(() => {
+    try {
+      const persisted = localStorage.getItem('aikart_presentation_mode');
+      if (persisted === '1') setPresentationMode(true);
+    } catch {
+      // ignore storage failures
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('aikart_presentation_mode', presentationMode ? '1' : '0');
+    } catch {
+      // ignore storage failures
+    }
+  }, [presentationMode]);
+
+  useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const isTypingTarget = !!target && (
+        target.tagName === 'INPUT' ||
+        target.tagName === 'TEXTAREA' ||
+        target.tagName === 'SELECT' ||
+        target.isContentEditable
+      );
+      if (isTypingTarget) return;
       if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
         e.preventDefault();
         if (!isGenerating) handleGenerateFit();
@@ -461,6 +492,8 @@ export default function TryOnPage() {
             initial={{ opacity: 0, y: -8 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -8 }}
+            role="status"
+            aria-live="polite"
             style={{
               position: 'fixed',
               top: 72,
@@ -857,6 +890,7 @@ export default function TryOnPage() {
             className="btn-ghost"
             style={{ fontSize: 9, padding: '7px 12px' }}
             title="Presentation mode. Shortcuts: Ctrl/Cmd+Enter render, Ctrl/Cmd+K search."
+            aria-pressed={presentationMode}
           >
             {presentationMode ? 'PRESENTATION ON' : 'PRESENTATION OFF'}
           </button>
