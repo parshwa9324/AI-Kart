@@ -301,41 +301,118 @@ export default function SpatialScanner({ isOpen, onClose, onComplete }: Props) {
         reqRef.current = requestAnimationFrame(loop);
     }, []);
 
-    const processScan = () => {
+    const processScan = async () => {
         if (!frontalData.current?.worldLandmarks || !leftLateralData.current?.worldLandmarks || !rightLateralData.current?.worldLandmarks) {
             setState('error');
             setInstruction('Failed to acquire metric 3D data. Try again.');
             return;
         }
 
-        const measurements = CentimeterConversionEngine.computePhysicalDimensions(
-            frontalData.current.worldLandmarks,
-            leftLateralData.current.worldLandmarks,
-            rightLateralData.current.worldLandmarks,
-            absoluteScaleMultiplier
-        );
-        setFinalMeasurements(measurements);
+        setState('success'); // show processing state conceptually
+        setInstruction('Processing 3D Neural Scan via Maison Luxe Backend...');
 
-        setState('success');
-        setInstruction('Enterprise Scan Complete. Review captures.');
+        try {
+            const token = localStorage.getItem('ai_kart_token'); // basic auth if needed
+            const response = await fetch('http://localhost:8000/api/v1/body/scan/landmarks', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+                },
+                body: JSON.stringify({
+                    frontalScan: frontalData.current.worldLandmarks,
+                    leftLateralScan: leftLateralData.current.worldLandmarks,
+                    rightLateralScan: rightLateralData.current.worldLandmarks,
+                    heightCm: 170, // will be overridden by triangulated height
+                    absoluteScaleMultiplier: absoluteScaleMultiplier
+                })
+            });
+
+            if (!response.ok) {
+                throw new Error('Backend computation failed');
+            }
+
+            const data = await response.json();
+            setFinalMeasurements(data);
+            setInstruction('Enterprise Scan Complete. Review captures.');
+        } catch (err) {
+            console.error(err);
+            setState('error');
+            setInstruction('Network error during scan processing. Please try again.');
+        }
     };
 
     if (!isOpen) return null;
 
+    const telemetryLines = [
+        { label: 'NEURAL', value: alignmentScore > 0 ? `${(alignmentScore * 0.97).toFixed(1)}%` : '---' },
+        { label: 'SPATIAL', value: latestLandmarks.length > 0 ? `${latestLandmarks.length} PTS` : '---' },
+        { label: 'BIOMETRIC', value: state === 'frontal_capture' || state === 'left_lateral_capture' || state === 'right_lateral_capture' ? 'LOCKING' : 'SCAN' },
+    ];
+
     return (
         <div className="fixed inset-0 z-[60] bg-black flex flex-col items-center justify-center font-sans">
 
-            {/* The Raw Camera Feed - Sits directly on the black background */}
+            {/* The Raw Camera Feed */}
             <video
                 ref={videoRef}
                 className="absolute inset-0 w-full h-full object-cover -scale-x-100 opacity-100"
                 playsInline muted
             />
 
+            {/* ── HOLOGRAPHIC VIGNETTE ─────────────────────────────── */}
+            <div className="absolute inset-0 z-[5] pointer-events-none"
+                style={{ background: 'radial-gradient(ellipse at center, transparent 50%, rgba(0,0,0,0.7) 100%)' }}
+            />
+
+            {/* ── CORNER BRACKET RETICLES ──────────────────────────── */}
+            {(['tl','tr','bl','br'] as const).map(corner => (
+                <motion.div
+                    key={corner}
+                    initial={{ opacity: 0, scale: 1.4 }}
+                    animate={{ opacity: 0.9, scale: 1 }}
+                    transition={{ duration: 0.6, ease: [0.16,1,0.3,1] }}
+                    className={cn(
+                        'absolute z-10 pointer-events-none',
+                        corner === 'tl' && 'top-4 left-4 md:top-8 md:left-8',
+                        corner === 'tr' && 'top-4 right-4 md:top-8 md:right-8',
+                        corner === 'bl' && 'bottom-16 left-4 md:bottom-20 md:left-8',
+                        corner === 'br' && 'bottom-16 right-4 md:bottom-20 md:right-8',
+                    )}
+                    style={{ width: 36, height: 36 }}
+                >
+                    <svg viewBox="0 0 36 36" fill="none" className="w-full h-full">
+                        {corner === 'tl' && <><polyline points="0,18 0,0 18,0" stroke="#10b981" strokeWidth="2" strokeLinecap="round" /></>}
+                        {corner === 'tr' && <><polyline points="18,0 36,0 36,18" stroke="#10b981" strokeWidth="2" strokeLinecap="round" /></>}
+                        {corner === 'bl' && <><polyline points="0,18 0,36 18,36" stroke="#10b981" strokeWidth="2" strokeLinecap="round" /></>}
+                        {corner === 'br' && <><polyline points="18,36 36,36 36,18" stroke="#10b981" strokeWidth="2" strokeLinecap="round" /></>}
+                    </svg>
+                </motion.div>
+            ))}
+
+            {/* ── LIVE TELEMETRY SIDEBAR ────────────────────────────── */}
+            {state !== 'success' && state !== 'init' && (
+                <motion.div
+                    initial={{ opacity: 0, x: -20 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    className="absolute left-4 md:left-8 top-1/2 -translate-y-1/2 z-20 flex flex-col gap-3 pointer-events-none"
+                >
+                    {telemetryLines.map(({ label, value }) => (
+                        <div key={label} className="flex flex-col gap-0.5">
+                            <span className="text-[9px] font-mono font-bold tracking-[0.2em] text-emerald-500/60 uppercase">{label}</span>
+                            <span className="text-xs font-mono text-emerald-300 tabular-nums">{value}</span>
+                        </div>
+                    ))}
+                    <div className="mt-2 h-px w-12 bg-emerald-500/20" />
+                    <div className="text-[8px] font-mono text-emerald-500/40 uppercase tracking-widest">
+                        {state.replace(/_/g, ' ')}
+                    </div>
+                </motion.div>
+            )}
+
             {/* Real-time Skeleton Overlay */}
             {latestLandmarks.length > 0 && (
                 <svg className="absolute inset-0 w-full h-full pointer-events-none z-10" viewBox="0 0 1 1" preserveAspectRatio="none">
-                    {/* Define the stick figure connections */}
                     {[
                         [LANDMARK.LEFT_SHOULDER, LANDMARK.RIGHT_SHOULDER],
                         [LANDMARK.LEFT_SHOULDER, LANDMARK.LEFT_ELBOW],
@@ -356,16 +433,14 @@ export default function SpatialScanner({ isOpen, onClose, onComplete }: Props) {
                         return (
                             <line
                                 key={`line-${i}`}
-                                // Use 1-x to mirror the coordinates just like the video CSS -scale-x-100
                                 x1={1 - p1.x} y1={p1.y}
                                 x2={1 - p2.x} y2={p2.y}
-                                stroke="rgba(52, 211, 153, 0.6)" // emerald-400
-                                strokeWidth="0.005"
+                                stroke="rgba(16, 185, 129, 0.7)"
+                                strokeWidth="0.004"
                                 strokeLinecap="round"
                             />
                         );
                     })}
-                    {/* Draw the joints */}
                     {[
                         LANDMARK.NOSE,
                         LANDMARK.LEFT_SHOULDER, LANDMARK.RIGHT_SHOULDER,
@@ -382,9 +457,8 @@ export default function SpatialScanner({ isOpen, onClose, onComplete }: Props) {
                                 key={`joint-${idx}`}
                                 cx={1 - p.x}
                                 cy={p.y}
-                                r="0.006"
-                                fill="#10b981"
-                                className="drop-shadow-[0_0_5px_#10b981]"
+                                r={idx === LANDMARK.NOSE ? '0.009' : '0.005'}
+                                fill={idx === LANDMARK.NOSE ? '#34d399' : '#10b981'}
                             />
                         );
                     })}
@@ -393,23 +467,32 @@ export default function SpatialScanner({ isOpen, onClose, onComplete }: Props) {
 
             <PremiumCard className="w-full max-w-4xl aspect-[4/3] md:aspect-[16/9] relative overflow-hidden border-0 !bg-transparent !backdrop-blur-none !shadow-none ring-0">
 
-                {/* Overlays */}
-                <div className="absolute inset-x-0 top-0 p-8 bg-gradient-to-b from-black/80 to-transparent flex justify-between items-start z-20">
+                {/* ── TOP HUD BAR ─────────────────────────────────────── */}
+                <div className="absolute inset-x-0 top-0 p-4 md:p-6 bg-gradient-to-b from-black/90 to-transparent flex justify-between items-start z-20">
                     <div>
-                        <h2 className="text-white text-lg font-bold tracking-tight drop-shadow-md">Kinematic Spatial Scanner</h2>
-                        <p className="text-neutral-200 text-sm font-medium mt-1 drop-shadow-md">{instruction}</p>
+                        <div className="flex items-center gap-2 mb-1">
+                            <motion.div
+                                animate={{ opacity: [1, 0.3, 1] }}
+                                transition={{ duration: 1.2, repeat: Infinity }}
+                                className="w-1.5 h-1.5 rounded-full bg-emerald-400"
+                            />
+                            <h2 className="text-white text-sm font-bold tracking-[0.15em] uppercase drop-shadow-md">Kinematic Spatial Engine</h2>
+                        </div>
+                        <p className="text-emerald-300/80 text-xs font-mono mt-0.5 drop-shadow-md">{instruction}</p>
                     </div>
-                    <div className="flex items-center gap-4">
+                    <div className="flex items-center gap-3">
                         {state !== 'success' && state !== 'error' && (
                             <div className={cn(
-                                "px-4 py-1.5 rounded-full font-mono font-bold text-sm backdrop-blur-md transition-colors border",
-                                alignmentScore >= 90 ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30 shadow-[0_0_15px_rgba(16,185,129,0.2)]' : 'bg-rose-500/10 text-rose-400 border-rose-500/30'
+                                "px-3 py-1 font-mono font-bold text-xs backdrop-blur-md transition-all duration-500 border",
+                                alignmentScore >= 90
+                                    ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/40 shadow-[0_0_20px_rgba(16,185,129,0.3)]'
+                                    : 'bg-red-950/20 text-rose-400 border-rose-500/30'
                             )}>
-                                Match: {alignmentScore}%
+                                ALIGN {alignmentScore}%
                             </div>
                         )}
-                        <button onClick={onClose} className="p-3 bg-white/[0.05] hover:bg-white/10 border border-white/10 rounded-full text-zinc-400 hover:text-white backdrop-blur-md transition-all">
-                            <X className="w-5 h-5" />
+                        <button onClick={onClose} className="p-2.5 bg-white/[0.05] hover:bg-white/10 border border-white/10 text-zinc-400 hover:text-white backdrop-blur-md transition-all">
+                            <X className="w-4 h-4" />
                         </button>
                     </div>
                 </div>
@@ -439,24 +522,45 @@ export default function SpatialScanner({ isOpen, onClose, onComplete }: Props) {
                         )}
                     </AnimatePresence>
 
-                    {/* Scanning Sweep Line */}
+                    {/* ── CINEMA SCAN BEAM ─────────────────────────── */}
                     {(state === 'frontal_capture' || state === 'left_lateral_capture' || state === 'right_lateral_capture') && (
-                        <div className="absolute inset-0 flex justify-center pointer-events-none overflow-hidden">
+                        <div className="absolute inset-0 pointer-events-none overflow-hidden">
                             <motion.div
-                                className="w-[30%] h-1 bg-emerald-400 shadow-[0_0_20px_#34d399] rounded-full absolute"
-                                animate={{ top: ['15%', '85%', '15%'] }}
-                                transition={{ duration: 2.5, repeat: Infinity, ease: 'linear' }}
+                                className="absolute left-0 right-0 h-[3px] pointer-events-none"
+                                style={{
+                                    background: 'linear-gradient(90deg, transparent 0%, rgba(16,185,129,0.0) 10%, rgba(52,211,153,0.9) 50%, rgba(16,185,129,0.0) 90%, transparent 100%)',
+                                    boxShadow: '0 0 24px 4px rgba(16,185,129,0.35), 0 0 2px rgba(52,211,153,1)',
+                                }}
+                                animate={{ top: ['12%', '88%', '12%'] }}
+                                transition={{ duration: 2.8, repeat: Infinity, ease: 'linear' }}
+                            />
+                            {/* Trailing wake glow */}
+                            <motion.div
+                                className="absolute left-0 right-0 h-16 pointer-events-none"
+                                style={{
+                                    background: 'linear-gradient(to bottom, rgba(16,185,129,0.0), rgba(16,185,129,0.04), rgba(16,185,129,0.0))',
+                                }}
+                                animate={{ top: ['8%', '80%', '8%'] }}
+                                transition={{ duration: 2.8, repeat: Infinity, ease: 'linear' }}
                             />
                         </div>
                     )}
                 </div>
 
-                {/* Progress Bar Bottom */}
-                <div className="absolute inset-x-8 bottom-8">
-                    <div className="h-1 w-full bg-white/5 rounded-full overflow-hidden backdrop-blur-md shadow-inner">
-                        <div
-                            className="h-full bg-emerald-500 shadow-[0_0_10px_#10b981] transition-all duration-100 ease-linear"
-                            style={{ width: `${progress}%` }}
+                {/* ── PROGRESS BAR ─────────────────────────────────── */}
+                <div className="absolute inset-x-4 md:inset-x-8 bottom-4 md:bottom-6 z-20">
+                    <div className="flex items-center justify-between mb-1.5">
+                        <span className="text-[9px] font-mono text-emerald-500/50 uppercase tracking-widest">Acquisition</span>
+                        <span className="text-[9px] font-mono text-emerald-400/70 tabular-nums">{Math.round(progress)}%</span>
+                    </div>
+                    <div className="h-[2px] w-full bg-white/[0.06] overflow-hidden">
+                        <motion.div
+                            className="h-full bg-emerald-400"
+                            style={{
+                                width: `${progress}%`,
+                                boxShadow: '0 0 8px rgba(16,185,129,0.5)',
+                                transition: 'width 100ms linear',
+                            }}
                         />
                     </div>
                 </div>

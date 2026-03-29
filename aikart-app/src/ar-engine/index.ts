@@ -6,7 +6,7 @@ export { PoseDetector, LANDMARK, type PoseResult } from './PoseDetector';
 export { Renderer } from './Renderer';
 export type { FPSStats, FramingHints } from './interfaces/IRenderer';
 export { Overlay, type OverlayTransform } from './Overlay';
-export { MeshWarper } from './MeshWarper';
+// MeshWarper: planned but not yet implemented — export removed to unblock build
 export type { PoseMeshInput } from './interfaces/IMeshLayer';
 export { GarmentLoader, type GarmentTexture } from './GarmentLoader';
 export { BackgroundRemover, type RemovalOptions } from './BackgroundRemover';

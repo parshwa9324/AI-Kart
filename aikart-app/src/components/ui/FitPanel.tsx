@@ -105,25 +105,25 @@ export default function FitPanel({ catalogEntry }: Props) {
     // Empty States
     if (!bodyProfile) {
         return (
-            <PremiumCard className="p-8 text-center max-w-sm mx-auto mt-8 flex flex-col items-center bg-[var(--surface-primary)] border-none">
-                <div className="w-8 h-8 flex items-center justify-center mb-6 text-white border border-[var(--border-default)]">
-                    <Ruler className="w-4 h-4" />
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', padding: 32, textAlign: 'center' }}>
+                <div style={{ width: 40, height: 40, display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: 24, border: '1px solid var(--border-gold)', color: 'var(--gold)' }}>
+                    <Ruler size={16} />
                 </div>
-                <h3 className="text-white text-[10px] tracking-cinematic mb-2 uppercase">Profile Required / CALIBRATION</h3>
-                <p className="text-[var(--text-secondary)] text-[10px] uppercase font-mono tracking-widest leading-relaxed">System awaiting physical dimension input for telemetry.</p>
-            </PremiumCard>
+                <div className="label-caps" style={{ color: 'var(--gold-dim)', marginBottom: 12 }}>Profile Required</div>
+                <p style={{ fontSize: 11, color: 'var(--text-muted)', letterSpacing: '0.06em', lineHeight: 1.7 }}>Create a Digital Profile to enable neural fit analysis.</p>
+            </div>
         );
     }
 
     if (!catalogEntry || !recommendation) {
         return (
-            <PremiumCard className="p-8 text-center max-w-sm mx-auto mt-8 flex flex-col items-center bg-[var(--surface-primary)] border-none">
-                <div className="w-8 h-8 flex items-center justify-center mb-6 text-white border border-[var(--border-default)]">
-                    <Layers className="w-4 h-4" />
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', padding: 32, textAlign: 'center' }}>
+                <div style={{ width: 40, height: 40, display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: 24, border: '1px solid rgba(201,168,76,0.3)', color: 'var(--gold)' }}>
+                    <ShieldCheck size={16} />
                 </div>
-                <h3 className="text-white text-[10px] tracking-cinematic mb-2 uppercase">Awaiting Selection</h3>
-                <p className="text-[var(--text-secondary)] text-[10px] uppercase font-mono tracking-widest leading-relaxed">Select a garment from the catalog to initialize fit engine.</p>
-            </PremiumCard>
+                <div className="label-caps" style={{ color: 'var(--gold)', marginBottom: 12, letterSpacing: '0.1em' }}>Physical Twin Active ✓</div>
+                <p style={{ fontSize: 11, color: 'var(--text-muted)', letterSpacing: '0.06em', lineHeight: 1.7 }}>Select a garment to initialize the neural fit intelligence engine.</p>
+            </div>
         );
     }
 
@@ -131,92 +131,83 @@ export default function FitPanel({ catalogEntry }: Props) {
     const bestSize = bestSizeResult?.recommendedSize;
 
     return (
-        <PremiumCard className="w-[360px] overflow-visible bg-[var(--surface-primary)] border border-[var(--border-default)] rounded-none shadow-none">
+        <div style={{ width: '100%', height: '100%', overflowY: 'auto', background: 'var(--surface-low)', display: 'flex', flexDirection: 'column' }}>
 
-            {/* SaaS Data Quality Head */}
-            <div className="px-5 py-4 border-b border-[var(--border-subtle)] flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                    <div className="w-2 h-2 bg-white animate-pulse" />
-                    <span className="text-[10px] font-mono tracking-widest text-[var(--text-secondary)] uppercase">AI_ENGINE / TELEMETRY</span>
+            {/* Panel Header */}
+            <div style={{ padding: '18px 20px', borderBottom: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'var(--surface-container)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <div style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--gold)', boxShadow: '0 0 8px var(--gold)', animation: 'gold-pulse 2s infinite' }} />
+                    <span className="label-caps" style={{ fontSize: 9 }}>FIT INTELLIGENCE</span>
                 </div>
                 {recommendation.dataQuality !== undefined && (
-                    <div className="flex items-center gap-2">
-                        <span className="text-[10px] uppercase font-mono text-[var(--text-muted)] tracking-widest">
-                            CONFIDENCE: {recommendation.dataQuality}%
-                        </span>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 10px', background: 'rgba(201,168,76,0.08)', border: '1px solid var(--border-gold)' }}>
+                        <span className="label-caps" style={{ fontSize: 8, color: 'var(--gold-dim)' }}>CONF {recommendation.dataQuality}%</span>
                     </div>
                 )}
             </div>
 
-            <div className="p-6 space-y-8">
+            <div style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: 24 }}>
 
-                <div className="border-b border-[var(--border-subtle)] pb-4 mb-6 flex justify-between items-end">
-                    <span className="text-[10px] font-mono uppercase tracking-widest text-[var(--text-muted)]">Target Object</span>
-                    <span className="text-xs tracking-cinematic text-white uppercase">{catalogEntry.name}</span>
+                <div style={{ borderBottom: '1px solid var(--border-subtle)', paddingBottom: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end' }}>
+                    <span className="label-caps" style={{ fontSize: 8 }}>Target Garment</span>
+                    <span style={{ fontSize: 12, color: 'var(--text-primary)', letterSpacing: '0.04em' }}>{catalogEntry.name}</span>
                 </div>
 
-                {/* Visual Gauge Header */}
-                <div className="flex items-center justify-between">
+                {/* Primary size recommendation */}
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                     <div>
-                        <div className="text-[10px] uppercase font-mono tracking-widest text-[var(--text-muted)] mb-2">Optimal Matrix</div>
-                        <div className="flex items-baseline gap-3">
-                            <span className="text-5xl font-light tracking-tight text-white leading-none">{bestSize ?? selectedSize}</span>
-                            <span className="text-[10px] font-mono uppercase tracking-widest text-white border border-white px-1.5 py-0.5">Selected</span>
+                        <div className="label-caps" style={{ fontSize: 8, marginBottom: 10 }}>Recommended Size</div>
+                        <div style={{ display: 'flex', alignItems: 'baseline', gap: 12 }}>
+                            <span className="text-gold" style={{ fontFamily: 'var(--font-serif)', fontSize: 56, fontWeight: 300, letterSpacing: '-0.03em', lineHeight: 1 }}>{bestSize ?? selectedSize}</span>
+                            <div style={{ padding: '3px 8px', background: 'rgba(201,168,76,0.1)', border: '1px solid var(--border-gold)' }}>
+                                <span className="label-caps" style={{ fontSize: 8, color: 'var(--gold-dim)' }}>OPTIMAL</span>
+                            </div>
                         </div>
                     </div>
-
-                    {/* The New Animated Gauge */}
-                    <DataGauge
-                        value={recommendation.confidenceScore}
-                        label="Confidence"
-                        size="sm"
-                        color={colorKey}
-                    />
+                    <DataGauge value={recommendation.confidenceScore} label="Confidence" size="sm" color={colorKey} />
                 </div>
 
-                {/* Return Risk Enterprise Badge */}
-                <div className="border border-[var(--border-default)] p-4 relative">
-                    <div className="flex items-center justify-between mb-2 pb-2 border-b border-[var(--border-subtle)]">
-                        <span className="text-[10px] font-mono tracking-widest text-[var(--text-muted)] uppercase">
-                            Risk Assessment
-                        </span>
-                        <span className={cn(
-                            "text-[10px] font-mono uppercase tracking-widest",
-                            recommendation.returnRisk === 'low' ? "text-white" :
-                                recommendation.returnRisk === 'medium' ? "text-[var(--text-secondary)]" : "text-[var(--text-dim)]"
-                        )}>
-                            Level: {recommendation.returnRisk}
+                {/* Return risk badge */}
+                <div style={{
+                    padding: 16, position: 'relative',
+                    background: recommendation.returnRisk === 'low' ? 'rgba(201,168,76,0.05)' : 'rgba(255,180,171,0.04)',
+                    border: `1px solid ${recommendation.returnRisk === 'low' ? 'var(--border-gold)' : 'rgba(255,180,171,0.2)'}`,
+                }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8, paddingBottom: 8, borderBottom: '1px solid var(--border-subtle)' }}>
+                        <span className="label-caps" style={{ fontSize: 8 }}>Return Risk</span>
+                        <span className="label-caps" style={{ fontSize: 8, color: recommendation.returnRisk === 'low' ? 'var(--gold)' : recommendation.returnRisk === 'medium' ? 'var(--text-secondary)' : 'var(--danger)' }}>
+                            {recommendation.returnRisk?.toUpperCase()}
                         </span>
                     </div>
-                    <p className="text-[10px] text-[var(--text-secondary)] uppercase font-mono leading-relaxed mt-2 tracking-wide">
-                        {recommendation.returnRisk === 'low' ? "PHYSICAL TOLERANCES MET. HIGH PROBABILITY OF NOMINAL FIT." :
-                            recommendation.returnRisk === 'medium' ? "DIMENSIONS TEST NOMINAL THRESHOLDS. MINOR DEVIATION POSSIBLE." :
-                                "VIOLATES BRAND CAD PHYSICAL STRICTNESS STANDARD. REJECT."}
+                    <p style={{ fontSize: 10, color: 'var(--text-muted)', lineHeight: 1.6, letterSpacing: '0.04em' }}>
+                        {recommendation.returnRisk === 'low' ? 'Physical tolerances met. High probability of nominal fit.' :
+                            recommendation.returnRisk === 'medium' ? 'Dimensions near nominal thresholds. Minor deviation possible.' :
+                                'Violates brand physical strictness standard.'}
                     </p>
                 </div>
 
-                {/* Size Carousel Options */}
+                {/* Size options */}
                 <div>
-                    <div className="text-[10px] font-mono uppercase tracking-widest text-[var(--text-secondary)] mb-3 pb-2 border-b border-[var(--border-subtle)]">Compare Matrices</div>
-                    <div className="flex gap-2">
+                    <div className="label-caps" style={{ fontSize: 8, marginBottom: 12, paddingBottom: 8, borderBottom: '1px solid var(--border-subtle)' }}>Compare Sizes</div>
+                    <div style={{ display: 'flex', gap: 6 }}>
                         {catalogEntry.sizes.map(s => {
                             const isSelected = selectedSize === s.sizeLabel;
                             const isBest = bestSize === s.sizeLabel;
                             return (
-                                <button
-                                    key={s.sizeLabel}
-                                    onClick={() => setSelectedSize(s.sizeLabel)}
-                                    className={cn(
-                                        "relative flex-1 py-3 text-sm font-light transition-all duration-300",
-                                        "border",
-                                        isSelected
-                                            ? "bg-white text-black border-white"
-                                            : "bg-transparent text-[var(--text-secondary)] border-[var(--border-default)] hover:border-white hover:text-white"
-                                    )}
+                                <button key={s.sizeLabel} onClick={() => setSelectedSize(s.sizeLabel)}
+                                    style={{
+                                        flex: 1, padding: '12px 4px', fontSize: 13,
+                                        fontFamily: 'var(--font-serif)', fontWeight: 300,
+                                        border: isSelected ? '1px solid var(--gold)' : '1px solid var(--border-default)',
+                                        background: isSelected ? 'rgba(201,168,76,0.1)' : 'transparent',
+                                        color: isSelected ? 'var(--gold)' : 'var(--text-secondary)',
+                                        cursor: 'pointer', position: 'relative',
+                                        transition: 'all 0.25s',
+                                    }}
                                 >
                                     {s.sizeLabel}
                                     {isBest && !isSelected && (
-                                        <div className="absolute top-1 right-1 w-1.5 h-1.5 bg-white" />
+                                        <div style={{ position: 'absolute', top: 4, right: 4, width: 4, height: 4, borderRadius: '50%', background: 'var(--gold)' }} />
                                     )}
                                 </button>
                             );
@@ -224,46 +215,34 @@ export default function FitPanel({ catalogEntry }: Props) {
                     </div>
                 </div>
 
-                {/* Granular Dimension Breakdown */}
+                {/* Dimension breakdown */}
                 <div>
-                    <div className="text-[10px] font-mono tracking-widest text-[var(--text-secondary)] mb-4 flex justify-between border-b border-[var(--border-subtle)] pb-2 uppercase">
-                        <span>Physical Telemetry</span>
-                        <span>Delta (mm)</span>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 12, paddingBottom: 8, borderBottom: '1px solid var(--border-subtle)' }}>
+                        <span className="label-caps" style={{ fontSize: 8 }}>Physical Telemetry</span>
+                        <span className="label-caps" style={{ fontSize: 8 }}>Delta mm</span>
                     </div>
-                    <div className="space-y-4">
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
                         <AnimatePresence mode="popLayout">
                             {recommendation.measurements.map(m => (
-                                <motion.div
-                                    key={m.dimension}
-                                    layout
-                                    initial={{ opacity: 0, x: -10 }}
-                                    animate={{ opacity: 1, x: 0 }}
-                                    className="group"
-                                >
-                                    <div className="flex justify-between items-center mb-2">
-                                        <span className="text-[10px] tracking-widest uppercase font-mono text-white">
+                                <motion.div key={m.dimension} layout initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }}>
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                                        <span style={{ fontSize: 11, color: 'var(--text-primary)', letterSpacing: '0.06em' }}>
                                             {DIMENSION_LABELS[m.dimension] ?? m.dimension}
                                         </span>
-                                        <div className="flex items-center gap-4">
-                                            <span className="text-[10px] font-mono uppercase tracking-widest text-[var(--text-secondary)]">
-                                                {FIT_LABELS[m.fit]}
-                                            </span>
-                                            <span className="text-[10px] font-mono text-white min-w-[30px] text-right">
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                                            <span className="label-caps" style={{ fontSize: 8, color: 'var(--text-muted)' }}>{FIT_LABELS[m.fit]}</span>
+                                            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: m.effectiveGap > 0 ? 'var(--gold-dim)' : m.effectiveGap < -2 ? 'var(--danger)' : 'var(--text-secondary)', minWidth: 28, textAlign: 'right' }}>
                                                 {m.effectiveGap > 0 ? '+' : ''}{(m.effectiveGap * 10).toFixed(0)}
                                             </span>
                                         </div>
                                     </div>
-
-                                    {/* Minimalist Progress Track */}
-                                    <div className="h-[2px] bg-[var(--border-default)] w-full relative">
-                                        <div className="absolute top-[-2px] bottom-[-2px] left-1/2 w-[1px] bg-[var(--text-dim)] -translate-x-1/2 z-10" />
+                                    <div style={{ height: 1, background: 'var(--border-subtle)', position: 'relative' }}>
+                                        <div style={{ position: 'absolute', top: -2, bottom: -2, left: '50%', width: 1, background: 'var(--border-default)', transform: 'translateX(-50%)', zIndex: 2 }} />
                                         <motion.div
                                             initial={{ width: '50%' }}
-                                            animate={{
-                                                width: `${Math.max(0, Math.min(100, 50 + (m.effectiveGap * 2.5)))}%`, // Map gap to 0-100% spread
-                                            }}
+                                            animate={{ width: `${Math.max(0, Math.min(100, 50 + (m.effectiveGap * 2.5)))}%` }}
                                             transition={{ type: 'spring', damping: 20, stiffness: 100 }}
-                                            className="h-full bg-white opacity-80"
+                                            style={{ height: '100%', background: m.fit === 'REGULAR' ? 'linear-gradient(90deg, var(--gold-deep), var(--gold))' : m.fit === 'TOO_TIGHT' ? 'var(--danger)' : 'var(--text-muted)' }}
                                         />
                                     </div>
                                 </motion.div>
@@ -272,11 +251,12 @@ export default function FitPanel({ catalogEntry }: Props) {
                     </div>
                 </div>
 
-                {/* Footer Insight */}
-                <div className="pt-6 border-t border-[var(--border-subtle)] text-[10px] text-[var(--text-dim)] uppercase font-mono tracking-widest leading-relaxed">
-                    [SYS_REPORT] {recommendation.summary}
+                {/* Insight footer */}
+                <div style={{ paddingTop: 16, borderTop: '1px solid var(--border-subtle)' }}>
+                    <div className="label-caps" style={{ fontSize: 8, color: 'var(--gold-dim)', marginBottom: 8 }}>SYS REPORT</div>
+                    <p style={{ fontSize: 10, color: 'var(--text-muted)', lineHeight: 1.6, letterSpacing: '0.04em' }}>{recommendation.summary}</p>
                 </div>
             </div>
-        </PremiumCard>
+        </div>
     );
 }

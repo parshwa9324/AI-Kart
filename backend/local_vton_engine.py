@@ -20,6 +20,7 @@ from PIL import Image, ImageDraw, ImageEnhance, ImageFilter
 
 from config import (
     GPU_MAX_CONCURRENT_RENDERS,
+    INFERENCE_STEPS,
     RESULT_BASE_URL,
     RESULT_CACHE_DIR,
     VTON_MODEL_ID,
@@ -27,7 +28,6 @@ from config import (
 
 logger = logging.getLogger(__name__)
 
-INFERENCE_STEPS = 30
 GUIDANCE_SCALE = 7.5
 
 TARGET_W, TARGET_H = 768, 1024
@@ -134,6 +134,24 @@ def load_pipeline(progress_cb: Optional[Callable[[int, str], None]] = None):
             logger.info("[VTON] xformers not available")
 
         _PIPELINE = pipe
+
+        # Warm CUDA allocator / kernels after load (does not run the full UNet).
+        if _DEVICE == "cuda":
+            try:
+                dummy = torch.randn(
+                    1,
+                    4,
+                    128,
+                    96,
+                    dtype=torch.float16,
+                    device="cuda",
+                )
+                del dummy
+                torch.cuda.empty_cache()
+                logger.info("[VTON] GPU warmed up")
+            except Exception as e:
+                logger.warning("[VTON] GPU warm-up skipped: %s", e)
+
         elapsed = time.time() - t0
         logger.info(f"[VTON] Ready in {elapsed:.1f}s on {_DEVICE}")
 

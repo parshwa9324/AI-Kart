@@ -121,7 +121,7 @@ function makeCatalogEntry(
     return {
         name,
         category,
-        displayUrl: model3dUrl ?? photoUrl,
+        displayUrl: photoUrl,  // Always use the photo, not the 3D model URL
         model3dUrl,
         materialKey,
         sizes,
@@ -138,7 +138,7 @@ export const GARMENT_CATALOG: CatalogEntry[] = [
         'lowpoly_jacket',
         'Casual Jacket',
         'jacket',
-        '/garments/3d-assets/free_lowpoly_jacket.glb',
+        '/garments/previews/casual_jacket.png',
         'polyester',
         '/garments/3d-assets/free_lowpoly_jacket.glb',
     ),
@@ -146,7 +146,7 @@ export const GARMENT_CATALOG: CatalogEntry[] = [
         'tshirt_3d',
         'Classic T-Shirt',
         'tshirt',
-        '/garments/3d-assets/short_sleeve_t-_shirt.glb',
+        '/garments/previews/classic_tshirt.png',
         'cotton',
         '/garments/3d-assets/short_sleeve_t-_shirt.glb',
     ),
@@ -154,14 +154,14 @@ export const GARMENT_CATALOG: CatalogEntry[] = [
         'tshirt_white',
         'White Cotton Tee',
         'tshirt',
-        '/garments/canonical/tshirt_white.png',
+        '/garments/previews/white_cotton_tee.png',
         'cotton',
     ),
     makeCatalogEntry(
         'longsleeve_black',
         'Black Long Sleeve',
         'longsleeve',
-        '/garments/canonical/tshirt_black_long.png',
+        '/garments/previews/black_longsleeve.png',
         'cotton_blend',
     ),
 ];

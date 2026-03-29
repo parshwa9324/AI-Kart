@@ -1,18 +1,22 @@
-"""AI-Kart initial database schema migration.
+"""AI-Kart Phase 4 — Simplified 4-table production schema.
 
-Revision ID: 001
+Revision ID: 001_initial_schema
 Revises:
-Create Date: 2026-03-14
+Create Date: 2026-03-26
 
-This is the initial schema — creating all tables from scratch.
-Run with:  alembic upgrade head
+Tables:
+  brands        — Multi-tenant B2B brand accounts
+  garments      — Brand garment catalog with digitized measurements
+  body_profiles — Anonymous body scan snapshots per session
+  render_jobs   — Virtual try-on async job queue
+
+Replaces the original 8-table schema with the canonical Phase 4 schema.
 """
 
 from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
-from sqlalchemy.dialects import postgresql
 
 # revision identifiers
 revision: str = "001_initial_schema"
@@ -22,158 +26,93 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    # ── Drop legacy tables if they exist (idempotent) ─────────────────────────
+    # This migration is the canonical baseline. Running it on a fresh DB is
+    # the happy path; on a DB with the old schema we drop & recreate cleanly.
+    op.execute("DROP TABLE IF EXISTS analytics_events CASCADE")
+    op.execute("DROP TABLE IF EXISTS size_chart_entries CASCADE")
+    op.execute("DROP TABLE IF EXISTS size_charts CASCADE")
+    op.execute("DROP TABLE IF EXISTS tryon_jobs CASCADE")
+    op.execute("DROP TABLE IF EXISTS body_scans CASCADE")
+    op.execute("DROP TABLE IF EXISTS garments CASCADE")
+    op.execute("DROP TABLE IF EXISTS brand_users CASCADE")
+    op.execute("DROP TABLE IF EXISTS render_jobs CASCADE")
+    op.execute("DROP TABLE IF EXISTS body_profiles CASCADE")
+    op.execute("DROP TABLE IF EXISTS brands CASCADE")
+
     # ── brands ────────────────────────────────────────────────────────────────
     op.create_table(
         "brands",
-        sa.Column("id", postgresql.UUID(as_uuid=False), primary_key=True),
+        sa.Column("id", sa.String(36), primary_key=True),
         sa.Column("name", sa.String(200), nullable=False),
-        sa.Column("slug", sa.String(80), nullable=False),
-        sa.Column("plan_tier", sa.String(20), server_default="trial"),
-        sa.Column("api_key_hash", sa.String(128), nullable=False),
-        sa.Column("stripe_customer_id", sa.String(64)),
-        sa.Column("webhook_url", sa.String(512)),
-        sa.Column("is_active", sa.Boolean(), server_default="true"),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), onupdate=sa.func.now()),
-        sa.UniqueConstraint("slug", name="uq_brands_slug"),
-        sa.UniqueConstraint("api_key_hash", name="uq_brands_api_key_hash"),
-    )
-
-    # ── brand_users ───────────────────────────────────────────────────────────
-    op.create_table(
-        "brand_users",
-        sa.Column("id", postgresql.UUID(as_uuid=False), primary_key=True),
-        sa.Column("brand_id", postgresql.UUID(as_uuid=False), sa.ForeignKey("brands.id", ondelete="CASCADE"), nullable=False),
-        sa.Column("email", sa.String(256), nullable=False),
-        sa.Column("password_hash", sa.String(256), nullable=False),
-        sa.Column("role", sa.String(30), server_default="admin"),
-        sa.Column("is_active", sa.Boolean(), server_default="true"),
-        sa.Column("last_login_at", sa.DateTime(timezone=True)),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
-        sa.UniqueConstraint("brand_id", "email", name="uq_brand_user_email"),
+        sa.Column("api_key", sa.String(128), nullable=False, unique=True),
+        sa.Column("plan_tier", sa.String(20), server_default="trial", nullable=False),
     )
 
     # ── garments ──────────────────────────────────────────────────────────────
     op.create_table(
         "garments",
-        sa.Column("id", postgresql.UUID(as_uuid=False), primary_key=True),
-        sa.Column("brand_id", postgresql.UUID(as_uuid=False), sa.ForeignKey("brands.id", ondelete="CASCADE"), nullable=False),
+        sa.Column("id", sa.String(36), primary_key=True),
+        sa.Column(
+            "brand_id",
+            sa.String(36),
+            sa.ForeignKey("brands.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
         sa.Column("name", sa.String(300), nullable=False),
-        sa.Column("category", sa.String(60), server_default="upper_body"),
-        sa.Column("sku", sa.String(120)),
-        sa.Column("image_url", sa.String(1024)),
-        sa.Column("mask_url", sa.String(1024)),
-        sa.Column("measurements", postgresql.JSON()),
-        sa.Column("is_active", sa.Boolean(), server_default="true"),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
+        sa.Column("type", sa.String(60), server_default="upper_body"),
+        sa.Column("sizes", sa.JSON()),
+        sa.Column("material_code", sa.String(50), server_default="cotton"),
+        sa.Column("stretch_coefficient", sa.Float(), server_default="0.02"),
     )
+    op.create_index("ix_garments_brand_id", "garments", ["brand_id"])
 
-    # ── body_scans ────────────────────────────────────────────────────────────
+    # ── body_profiles ─────────────────────────────────────────────────────────
     op.create_table(
-        "body_scans",
-        sa.Column("id", postgresql.UUID(as_uuid=False), primary_key=True),
-        sa.Column("brand_id", postgresql.UUID(as_uuid=False), sa.ForeignKey("brands.id", ondelete="SET NULL"), nullable=True),
-        sa.Column("session_token", sa.String(256), nullable=False, index=True),
-        sa.Column("height_cm", sa.Float()),
-        sa.Column("weight_kg", sa.Float()),
-        sa.Column("gender", sa.String(20)),
-        sa.Column("age_group", sa.String(20)),
-        sa.Column("chest_cm", sa.Float()),
-        sa.Column("waist_cm", sa.Float()),
-        sa.Column("hip_cm", sa.Float()),
-        sa.Column("shoulder_cm", sa.Float()),
-        sa.Column("inseam_cm", sa.Float()),
-        sa.Column("sleeve_cm", sa.Float()),
-        sa.Column("neck_cm", sa.Float()),
-        sa.Column("scan_method", sa.String(30), server_default="sam3d"),
-        sa.Column("confidence_score", sa.Float()),
-        sa.Column("input_quality", sa.String(20)),
-        sa.Column("raw_landmarks", postgresql.JSON()),
-        sa.Column("scan_duration_ms", sa.Integer()),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
+        "body_profiles",
+        sa.Column("id", sa.String(36), primary_key=True),
+        sa.Column("session_uuid", sa.String(256), nullable=False),
+        sa.Column(
+            "brand_id",
+            sa.String(36),
+            sa.ForeignKey("brands.id", ondelete="SET NULL"),
+            nullable=True,
+        ),
+        sa.Column("measurements", sa.JSON()),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.func.now(),
+            nullable=False,
+        ),
     )
+    op.create_index("ix_body_profiles_session_uuid", "body_profiles", ["session_uuid"])
 
-    # ── tryon_jobs ────────────────────────────────────────────────────────────
+    # ── render_jobs ───────────────────────────────────────────────────────────
     op.create_table(
-        "tryon_jobs",
-        sa.Column("id", postgresql.UUID(as_uuid=False), primary_key=True),
-        sa.Column("brand_id", postgresql.UUID(as_uuid=False), sa.ForeignKey("brands.id", ondelete="SET NULL"), nullable=True),
-        sa.Column("garment_id", postgresql.UUID(as_uuid=False), sa.ForeignKey("garments.id", ondelete="SET NULL"), nullable=True),
-        sa.Column("body_scan_id", postgresql.UUID(as_uuid=False), sa.ForeignKey("body_scans.id", ondelete="SET NULL"), nullable=True),
+        "render_jobs",
+        sa.Column("id", sa.String(36), primary_key=True),
+        sa.Column("job_uuid", sa.String(36), nullable=False),
+        sa.Column(
+            "brand_id",
+            sa.String(36),
+            sa.ForeignKey("brands.id", ondelete="SET NULL"),
+            nullable=True,
+        ),
         sa.Column("status", sa.String(30), server_default="queued"),
-        sa.Column("queue_name", sa.String(60), server_default="aikart_tryon"),
-        sa.Column("priority", sa.Integer(), server_default="5"),
-        sa.Column("person_image_key", sa.String(512)),
-        sa.Column("result_image_url", sa.String(1024)),
-        sa.Column("error_message", sa.Text()),
-        sa.Column("attempt", sa.Integer(), server_default="0"),
-        sa.Column("max_retries", sa.Integer(), server_default="3"),
-        sa.Column("progress_pct", sa.Integer(), server_default="0"),
-        sa.Column("queued_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
-        sa.Column("started_at", sa.DateTime(timezone=True)),
-        sa.Column("completed_at", sa.DateTime(timezone=True)),
-        sa.Column("queue_wait_ms", sa.Integer()),
-        sa.Column("inference_ms", sa.Integer()),
+        sa.Column("result_url", sa.String(1024)),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.func.now(),
+            nullable=False,
+        ),
     )
-
-    # ── size_charts ───────────────────────────────────────────────────────────
-    op.create_table(
-        "size_charts",
-        sa.Column("id", postgresql.UUID(as_uuid=False), primary_key=True),
-        sa.Column("brand_id", postgresql.UUID(as_uuid=False), sa.ForeignKey("brands.id", ondelete="CASCADE"), nullable=False),
-        sa.Column("garment_category", sa.String(60), server_default="upper_body"),
-        sa.Column("region", sa.String(20), server_default="US"),
-        sa.Column("is_active", sa.Boolean(), server_default="true"),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
-        sa.UniqueConstraint("brand_id", "garment_category", "region", name="uq_size_chart"),
-    )
-
-    # ── size_chart_entries ────────────────────────────────────────────────────
-    op.create_table(
-        "size_chart_entries",
-        sa.Column("id", sa.Integer(), autoincrement=True, primary_key=True),
-        sa.Column("chart_id", postgresql.UUID(as_uuid=False), sa.ForeignKey("size_charts.id", ondelete="CASCADE"), nullable=False),
-        sa.Column("size_label", sa.String(10), nullable=False),
-        sa.Column("chest_min", sa.Float()),
-        sa.Column("chest_max", sa.Float()),
-        sa.Column("waist_min", sa.Float()),
-        sa.Column("waist_max", sa.Float()),
-        sa.Column("hip_min", sa.Float()),
-        sa.Column("hip_max", sa.Float()),
-        sa.Column("shoulder_min", sa.Float()),
-        sa.Column("shoulder_max", sa.Float()),
-        sa.Column("sort_order", sa.Integer(), server_default="0"),
-        sa.UniqueConstraint("chart_id", "size_label", name="uq_size_chart_entry"),
-    )
-
-    # ── analytics_events ──────────────────────────────────────────────────────
-    op.create_table(
-        "analytics_events",
-        sa.Column("id", sa.Integer(), autoincrement=True, primary_key=True),
-        sa.Column("brand_id", sa.String(36), nullable=False, index=True),
-        sa.Column("event_type", sa.String(60), nullable=False, index=True),
-        sa.Column("session_token", sa.String(256), index=True),
-        sa.Column("garment_id", sa.String(36)),
-        sa.Column("size_recommended", sa.String(10)),
-        sa.Column("confidence", sa.Float()),
-        sa.Column("latency_ms", sa.Integer()),
-        sa.Column("extra", postgresql.JSON()),
-        sa.Column("occurred_at", sa.DateTime(timezone=True), server_default=sa.func.now(), index=True),
-    )
-
-    # ── Indexes ───────────────────────────────────────────────────────────────
-    op.create_index("ix_tryon_jobs_brand_status", "tryon_jobs", ["brand_id", "status"])
-    op.create_index("ix_tryon_jobs_queued_at", "tryon_jobs", ["queued_at"])
-    op.create_index("ix_garments_brand_category", "garments", ["brand_id", "category"])
-    op.create_index("ix_body_scans_created_at", "body_scans", ["created_at"])
+    op.create_index("ix_render_jobs_job_uuid", "render_jobs", ["job_uuid"])
 
 
 def downgrade() -> None:
-    op.drop_table("analytics_events")
-    op.drop_table("size_chart_entries")
-    op.drop_table("size_charts")
-    op.drop_table("tryon_jobs")
-    op.drop_table("body_scans")
+    op.drop_table("render_jobs")
+    op.drop_table("body_profiles")
     op.drop_table("garments")
-    op.drop_table("brand_users")
     op.drop_table("brands")

@@ -1,14 +1,37 @@
+# AI-Kart Backend — Production Dependencies
+# ─────────────────────────────────────────
+# Web Framework
 fastapi
 uvicorn[standard]
+
+# Data & Validation
+pydantic
+numpy
+scipy
+
+# Image Processing / Computer Vision
 opencv-python
 mediapipe
-numpy
-pydantic
+Pillow
+
+# Auth & Security
 python-multipart
-scipy
+python-jose[cryptography]
+passlib
+
+# Job Queue & Cache
 redis
 rq
 httpx
-python-jose[cryptography]
-passlib
-Pillow
+
+# ─────────────────────────────────────────
+# Local Neural Inference (IDM-VTON / OOTDiffusion)
+# Install PyTorch separately (CUDA 12.1 build):
+#   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+# Then install the rest:
+diffusers
+accelerate
+transformers
+huggingface_hub
+xformers
+safetensors

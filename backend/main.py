@@ -49,6 +49,7 @@ from profile_store import (
     BodyProfile, save_profile, get_profile, delete_profile, generate_session_token
 )
 from local_vton_engine import GPUBusyError, get_gpu_stats
+import local_state
 
 logger = logging.getLogger(__name__)
 
@@ -478,16 +479,15 @@ async def render_virtual_tryon(
     # To achieve seamless background rendering out of the box, we use FastAPI's
     # built-in BackgroundTasks threadpool.
     import uuid, time
-    from local_state import LOCAL_JOBS
     
     job_id = str(uuid.uuid4())
     
     # Initialize job in shared memory
-    LOCAL_JOBS[job_id] = {
+    local_state.init_job(job_id, {
         "status": "processing",
         "progressPct": 0,
         "estimatedSeconds": 15
-    }
+    })
     
     # Import the custom worker logic directly
     # Ensure it's imported globally or safely inside thread
@@ -507,9 +507,14 @@ async def render_virtual_tryon(
             import traceback
             tb = traceback.format_exc()
             logger.error("RENDER FAILED: %s\n%s", e, tb)
-            LOCAL_JOBS[job_id]["status"] = "failed"
-            LOCAL_JOBS[job_id]["error"] = str(e)
-            LOCAL_JOBS[job_id]["progressDetail"] = str(e)
+            local_state.update_job(
+                job_id,
+                {
+                    "status": "failed",
+                    "error": str(e),
+                    "progressDetail": str(e),
+                },
+            )
 
 
     # Dispatch to FastAPI threadpool
@@ -534,10 +539,8 @@ async def poll_render_status(
     Returns status + progressPct so the frontend can drive a real progress bar.
     Security: Brand can only access their own jobs (tenant-scoped).
     """
-    from local_state import LOCAL_JOBS
-    
-    if job_id in LOCAL_JOBS:
-        job = LOCAL_JOBS[job_id]
+    job = local_state.get_job(job_id)
+    if job is not None:
         return TryOnRenderResponse(
             jobId=job_id,
             status=job["status"],

@@ -17,7 +17,7 @@ from jose import JWTError, jwt
 from datetime import datetime, timedelta
 from config import (
     JWT_SECRET_KEY, JWT_ALGORITHM, JWT_EXPIRE_MINUTES,
-    RATE_LIMITS, BRAND_CAPABILITIES, ENFORCE_RATE_LIMITS, REDIS_URL
+    RATE_LIMITS, BRAND_CAPABILITIES, ENFORCE_RATE_LIMITS, REDIS_URL, ENFORCE_AUTH,
 )
 from typing import Optional
 import time
@@ -31,48 +31,19 @@ security = HTTPBearer(auto_error=False)
 # Demo Brands (Local Dev Only)
 # Production: Loaded from PostgreSQL with full metadata
 # ──────────────────────────────────────────────────────────────────────────────
-DEMO_BRANDS = {
-    "brand_zegna": {
-        "name": "Ermenegildo Zegna",
-        "plan": "enterprise",
-        "api_key": "demo_key_zegna",
-        "webhook_url": "",
-        "created_at": "2025-01-01",
-    },
-    "brand_prada": {
-        "name": "Prada",
-        "plan": "enterprise",
-        "api_key": "demo_key_prada",
-        "webhook_url": "",
-        "created_at": "2025-01-15",
-    },
-    "brand_hm": {
-        "name": "H&M",
-        "plan": "standard",
-        "api_key": "demo_key_hm",
-        "webhook_url": "",
-        "created_at": "2025-02-01",
-    },
-    "brand_default": {
-        "name": "Demo Brand",
-        "plan": "trial",
-        "api_key": "demo_key_default",
-        "webhook_url": "",
-        "created_at": "2025-03-01",
-    },
-}
+# DEMO_BRANDS dictionary was removed for Phase 4 PostgreSQL Migration.
+# Brands are now stored and fetched from the database dynamically.
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Token Generation
 # ──────────────────────────────────────────────────────────────────────────────
 
-def create_access_token(brand_id: str) -> str:
+def create_access_token(brand_id: str, plan_tier: str = "trial") -> str:
     """Create a JWT token for a given brand_id with plan tier embedded."""
-    brand = DEMO_BRANDS.get(brand_id, {})
     payload = {
         "sub": brand_id,
-        "plan": brand.get("plan", "trial"),
+        "plan": plan_tier,
         "exp": datetime.utcnow() + timedelta(minutes=JWT_EXPIRE_MINUTES),
         "iat": datetime.utcnow(),
     }
@@ -87,29 +58,22 @@ def get_current_brand(
     credentials: Optional[HTTPAuthorizationCredentials] = Security(security)
 ) -> str:
     """
-    FastAPI dependency — extracts brand_id from JWT or API key.
-    Falls back to 'brand_default' for local dev with no auth header.
+    FastAPI dependency — extracts brand_id from JWT.
     """
     if credentials is None:
-        logger.warning("No Authorization header. Using 'brand_default' for local dev.")
+        if ENFORCE_AUTH:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail={"error": "AUTH_FAILED", "message": "Authorization header is required."}
+            )
         return "brand_default"
 
     token = credentials.credentials
-
-    # Check raw API key first (B2B server-to-server)
-    for brand_id, brand_data in DEMO_BRANDS.items():
-        if token == brand_data["api_key"]:
-            return brand_id
-
-    # Decode as JWT
     try:
         payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
         brand_id: str = payload.get("sub")
-        if brand_id is None or brand_id not in DEMO_BRANDS:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid brand credentials"
-            )
+        if not brand_id:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token scope")
         return brand_id
     except JWTError:
         raise HTTPException(
@@ -117,30 +81,22 @@ def get_current_brand(
             detail="Invalid or expired token"
         )
 
-
 # ──────────────────────────────────────────────────────────────────────────────
 # Brand Capability Check
 # ──────────────────────────────────────────────────────────────────────────────
 
-def get_brand_plan(brand_id: str) -> str:
-    """Get the plan tier for a brand."""
-    return DEMO_BRANDS.get(brand_id, {}).get("plan", "trial")
-
-
-def get_brand_capabilities(brand_id: str) -> dict:
+def get_brand_capabilities(plan: str) -> dict:
     """Get the full capability set for a brand based on their plan."""
-    plan = get_brand_plan(brand_id)
     return BRAND_CAPABILITIES.get(plan, BRAND_CAPABILITIES["trial"])
 
 
-def require_capability(brand_id: str, capability: str):
+def require_capability(plan: str, capability: str):
     """
-    Check if a brand has access to a specific feature.
+    Check if a brand has access to a specific feature based on their plan tier.
     Raises 403 if the brand's plan doesn't include the capability.
     """
-    caps = get_brand_capabilities(brand_id)
+    caps = get_brand_capabilities(plan)
     if not caps.get(capability, False):
-        plan = get_brand_plan(brand_id)
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail={
@@ -168,17 +124,13 @@ def _get_rate_limit_redis():
         return None
 
 
-def check_rate_limit(brand_id: str, action: str = "request") -> dict:
+def check_rate_limit(brand_id: str, plan: str = "enterprise", action: str = "request") -> dict:
     """
     Check if a brand has exceeded their rate limit for a given action.
 
     Uses a Redis sliding window counter (per-minute for requests, per-hour for renders).
     Returns a dict with rate limit metadata for headers.
-
-    When ENFORCE_RATE_LIMITS is False (local dev), always allows the request
-    but still returns the metadata so the frontend can display it.
     """
-    plan = get_brand_plan(brand_id)
     limits = RATE_LIMITS.get(plan, RATE_LIMITS["trial"])
 
     # Determine which limit to check

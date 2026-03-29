@@ -17,6 +17,7 @@ import { Ruler, Sparkles, X, ChevronRight, Check, Camera } from 'lucide-react';
 import SpatialScanner from './SpatialScanner';
 import type { ExtractedMeasurements } from '@/ar-engine/CentimeterConversionEngine';
 import { cn } from '@/lib/utils';
+import { usePhysicalTwin } from '../../hooks/usePhysicalTwin';
 
 const STORAGE_KEY = 'aikart_body_profile';
 
@@ -40,6 +41,7 @@ function estimateFromHeight(heightCm: number): UserBodyMeasurements {
 
 export default function BodyCalibrationModal({ isOpen, onClose }: Props) {
     const setBodyProfile = usePoseStore(s => s.setBodyProfile);
+    const { saveProfile: persistToBackend, sessionToken } = usePhysicalTwin();
 
     const [height, setHeight] = useState(175);
     const [chest, setChest] = useState(96);
@@ -84,20 +86,21 @@ export default function BodyCalibrationModal({ isOpen, onClose }: Props) {
         setStep(1);
     }, [height]);
 
-    const handleScanComplete = useCallback((data: ExtractedMeasurements) => {
+    const handleScanComplete = useCallback((data: any) => {
         setShowScanner(false);
-        setHeight(data.estimatedHeightCm);
-        setChest(data.trueChestCircumferenceCm);
-        setWaist(data.trueWaistCircumferenceCm);
-        setHip(Math.round(data.trueWaistCircumferenceCm * 1.15)); // Fallback ratio for hips
-        setShoulder(data.shoulderWidthCm);
+        setHeight(data.heightCm);
+        setChest(data.measurements.chestCircumference.value);
+        setWaist(data.measurements.waistCircumference.value);
+        setHip(data.measurements.hipCircumference.value);
+        setShoulder(data.measurements.shoulderWidth.value);
+        setArmLength(data.measurements.armLength.value);
         setHasEstimated(false); // They were literally measured, not estimated by height!
         setStep(1);
     }, []);
 
     const handleSave = useCallback(() => {
         const profile: UserBodyProfile = {
-            userId: `local_${Date.now()}`,
+            userId: sessionToken || `local_${Date.now()}`,
             heightCm: height,
             measurements: {
                 chestCircumference: chest,
@@ -108,15 +111,21 @@ export default function BodyCalibrationModal({ isOpen, onClose }: Props) {
                 torsoLength: Math.round(height * 0.30),
                 inseam: Math.round(height * 0.45),
             },
-            scanMethod: 'manual_input',
+            scanMethod: hasEstimated ? 'mediapipe_estimated' : 'manual_input',
             measuredAt: new Date().toISOString(),
-            confidence: 0.7,
+            confidence: hasEstimated ? 0.65 : 0.7,
         };
 
+        // 1. Store in Zustand (volatile — for immediate UI use)
         setBodyProfile(profile);
+        // 2. Store in localStorage (client-side backup)
         try { localStorage.setItem(STORAGE_KEY, JSON.stringify(profile)); } catch { /* silent */ }
+        // 3. Persist to backend SQLite (the permanent Physical Twin)
+        persistToBackend(profile).catch((err: unknown) =>
+            console.warn('[BodyCalibration] Backend persist failed:', err)
+        );
         onClose();
-    }, [height, chest, waist, hip, shoulder, armLength, setBodyProfile, onClose]);
+    }, [height, chest, waist, hip, shoulder, armLength, hasEstimated, setBodyProfile, onClose, persistToBackend, sessionToken]);
 
     function cmToFeetInches(cm: number): string {
         const totalInches = cm / 2.54;

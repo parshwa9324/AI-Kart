@@ -32,7 +32,7 @@ target_metadata = Base.metadata
 # ── Build async DB URL ────────────────────────────────────────────────────────
 ASYNC_DB_URL = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://").replace(
     "postgres://", "postgresql+asyncpg://"
-)
+).split("?")[0] # Strip unsupported asyncpg query params
 
 
 def run_migrations_offline() -> None:

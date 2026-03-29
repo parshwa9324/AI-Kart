@@ -174,8 +174,8 @@ export default function TryOnPage() {
   const bodyProfile = usePoseStore(s => s.bodyProfile);
 
   const stepMatch = progressDetail.match(/Step\s+(\d+)\/(\d+)/i);
-  const currentStep = stepMatch ? Number(stepMatch[1]) : Math.max(0, Math.round((progressPct / 100) * 30));
-  const totalSteps = stepMatch ? Number(stepMatch[2]) : 30;
+  const currentStep = stepMatch ? Number(stepMatch[1]) : Math.max(0, Math.round((progressPct / 100) * 15));
+  const totalSteps = stepMatch ? Number(stepMatch[2]) : 15;
   const pctEta = progressPct > 0 ? Math.max(0, Math.round((elapsedSeconds * (100 - progressPct)) / progressPct)) : null;
   const stepEta = currentStep > 0 && totalSteps > currentStep
     ? Math.max(0, Math.round((elapsedSeconds / currentStep) * (totalSteps - currentStep)))
@@ -893,7 +893,7 @@ export default function TryOnPage() {
                     letterSpacing: '0.14em',
                   }}
                 >
-                  Rendered on RTX 4050 - 30 steps
+                  Rendered on RTX 4050 - 15 steps
                 </div>
               </div>
 

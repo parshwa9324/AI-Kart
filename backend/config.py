@@ -180,6 +180,9 @@ VTON_MODEL_ID = os.getenv(
 # Skip blocking warm-up on startup (faster CI / when GPU unavailable)
 VTON_SKIP_STARTUP_WARMUP = os.getenv("VTON_SKIP_STARTUP_WARMUP", "false").lower() == "true"
 
+# SDXL inpaint diffusion steps — lower = faster demo; raise for production quality (e.g. 20–25).
+INFERENCE_STEPS = int(os.getenv("INFERENCE_STEPS", "15"))
+
 MOCK_TRYON_IMAGES = [
     "https://images.unsplash.com/photo-1515886657613-9f3515b0c78f?w=800&q=80",
     "https://images.unsplash.com/photo-1539109136881-3be0616acf4b?w=800&q=80",

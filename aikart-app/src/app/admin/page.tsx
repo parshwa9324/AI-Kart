@@ -3,6 +3,7 @@
 import { motion } from 'framer-motion';
 import { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
+import { AIKartAPI } from '@/ar-engine/APIClient';
 
 /* ── Animated Terminal Counter ─────────────────────────────── */
 function AnimCounter({ target, duration = 1500, decimals = 0 }: { target: number; duration?: number; decimals?: number }) {
@@ -35,37 +36,7 @@ function Sparkline({ data, color = 'white', height = 40 }: { data: number[]; col
     );
 }
 
-/* ── Mock Data ─────────────────────────────────────────────── */
-const METRICS = [
-    {
-        label: 'SYS_CALLS_TODAY',
-        value: 1284,
-        change: +12.4,
-        sparkline: [820, 940, 1100, 1050, 1200, 1150, 1284],
-    },
-    {
-        label: 'ACTIVE_MODELS',
-        value: 347,
-        change: +3.2,
-        sparkline: [310, 320, 325, 330, 338, 342, 347],
-    },
-    {
-        label: 'CONVERSION_YIELD',
-        value: 23.7,
-        decimals: 1,
-        suffix: '%',
-        change: +2.1,
-        sparkline: [18, 19.5, 20.2, 21, 22.5, 23, 23.7],
-    },
-    {
-        label: 'TOLERANCE_VIOLATIONS',
-        value: 14,
-        change: -8.3,
-        sparkline: [28, 24, 22, 19, 18, 16, 14],
-        alert: true,
-    },
-];
-
+/* ── Static Mock Definitions ─────────────────────────────── */
 const RECENT_ACTIVITY = [
     { time: 'T-02M', event: 'DIMENSION MATCH: NOMINAL', detail: 'IDM-VTON Render Comp. Latency: 2.8s' },
     { time: 'T-05M', event: 'DATA INGESTION: SUCCESS', detail: 'Cashmere Collection. 4 Assets.' },
@@ -87,17 +58,75 @@ const SIZE_DIST = [
 const containerVariants = {
     hidden: { opacity: 0 },
     visible: { opacity: 1, transition: { staggerChildren: 0.1, delayChildren: 0.2 } },
-};
+} as const;
 const itemVariants = {
     hidden: { opacity: 0, y: 10 },
-    visible: { opacity: 1, y: 0, transition: { duration: 0.8, ease: [0.2, 0.8, 0.2, 1] } },
-};
+    visible: { opacity: 1, y: 0, transition: { duration: 0.8, ease: [0.2, 0.8, 0.2, 1] as any } },
+} as const;
 
 /* ══════════════════════════════════════════════════════════════
    ADMIN TERMINAL (Bloomberg Meets Loro Piana)
    ══════════════════════════════════════════════════════════════ */
 
 export default function AdminDashboard() {
+    // ── Live GPU State ──
+    const [activeRenders, setActiveRenders] = useState(0);
+    const [maxRenders, setMaxRenders] = useState(1);
+    const [gpuDevice, setGpuDevice] = useState("SCANNING...");
+
+    useEffect(() => {
+        let isSubscribed = true;
+        const fetchHealth = async () => {
+            try {
+                const h = await AIKartAPI.getGPUHealth() as Record<string, any>;
+                if (isSubscribed) {
+                    setActiveRenders(h.active_renders ?? 0);
+                    setMaxRenders(h.max_concurrent_renders ?? 1);
+                    setGpuDevice(h.device?.replace(/_/g, ' ')?.toUpperCase() || "RTX LOCAL");
+                }
+            } catch (err) {
+                console.warn("GPU health fetch failed", err);
+            }
+        };
+        fetchHealth();
+        const interval = setInterval(fetchHealth, 3000);
+        return () => {
+            isSubscribed = false;
+            clearInterval(interval);
+        };
+    }, []);
+
+    const METRICS = [
+        {
+            label: 'SYS_CALLS_TODAY',
+            value: 1284,
+            change: +12.4,
+            sparkline: [820, 940, 1100, 1050, 1200, 1150, 1284],
+        },
+        {
+            label: 'GPU_ACTIVE_RENDERS',
+            value: activeRenders,
+            change: 0,
+            suffix: ` / ${maxRenders}`,
+            sparkline: [0, 0, 0, 0, 0, 0, activeRenders], // simplified sparkline for live val
+        },
+        {
+            label: 'CONVERSION_YIELD',
+            value: 23.7,
+            decimals: 1,
+            suffix: '%',
+            change: +2.1,
+            sparkline: [18, 19.5, 20.2, 21, 22.5, 23, 23.7],
+        },
+        {
+            label: 'TOLERANCE_VIOLATIONS',
+            value: 14,
+            change: -8.3,
+            sparkline: [28, 24, 22, 19, 18, 16, 14],
+            alert: true,
+        },
+    ];
+
     return (
         <motion.div variants={containerVariants} initial="hidden" animate="visible" className="min-h-screen bg-[var(--background)] text-white p-6 font-mono selection:bg-white selection:text-black">
 
@@ -137,9 +166,9 @@ export default function AdminDashboard() {
                             </div>
 
                             <div className="flex items-center justify-between border-t border-[var(--border-subtle)] pt-3">
-                                <span className="text-[10px] uppercase text-[var(--text-dim)] tracking-widest">DELTA (24H)</span>
+                                <span className="text-[10px] uppercase text-[var(--text-dim)] tracking-widest">{m.label === 'GPU_ACTIVE_RENDERS' ? gpuDevice : 'DELTA (24H)'}</span>
                                 <span className={`text-[10px] uppercase font-mono tracking-widest ${trendGood ? 'text-white' : 'text-[var(--text-secondary)]'}`}>
-                                    {isPositive ? '+' : ''}{m.change}%
+                                    {m.label === 'GPU_ACTIVE_RENDERS' ? 'LIVE' : `${isPositive ? '+' : ''}${m.change}%`}
                                 </span>
                             </div>
                         </motion.div>

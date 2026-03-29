@@ -18,7 +18,7 @@ _ASYNC_DB_URL = DATABASE_URL.replace(
     "postgresql://", "postgresql+asyncpg://"
 ).replace(
     "postgres://", "postgresql+asyncpg://"
-)
+).split("?")[0] # Strip unsupported asyncpg query params like sslmode
 
 engine = create_async_engine(
     _ASYNC_DB_URL,

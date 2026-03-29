@@ -22,6 +22,7 @@ import random
 import base64
 from io import BytesIO
 from typing import Optional
+import local_state
 
 logger = logging.getLogger(__name__)
 
@@ -104,7 +105,7 @@ class ProgressReporter:
         0%  — Job picked up, loading model
         10% — Model warm, preprocessing user photo
         30% — Diffusion inference started
-        60% — Inference halfway (step 15/30)
+        60% — Inference halfway (mid steps)
         85% — Inference complete, postprocessing
         95% — Uploading to CDN
         100% — Done, result stored
@@ -123,14 +124,13 @@ class ProgressReporter:
             updates["progress_detail"] = detail
         safe_redis_hset(self.redis_conn, self.job_key, updates)
         
-        try:
-            from local_state import LOCAL_JOBS
-            if self.job_id in LOCAL_JOBS:
-                LOCAL_JOBS[self.job_id]["progressPct"] = pct
-                if detail:
-                    LOCAL_JOBS[self.job_id]["progressDetail"] = detail
-        except Exception:
-            pass
+        local_state.update_job(
+            self.job_id,
+            {
+                "progressPct": pct,
+                **({"progressDetail": detail} if detail else {}),
+            },
+        )
             
         logger.info(f"[WORKER] Job {self.job_id}: {pct}% — {detail}")
 
@@ -172,7 +172,6 @@ def run_tryon_inference(
     """
     import redis as redis_lib
     from config import REDIS_URL, JOB_TTL_SECONDS
-    from local_state import LOCAL_JOBS
 
     try:
         r = redis_lib.from_url(REDIS_URL, decode_responses=True)
@@ -192,9 +191,14 @@ def run_tryon_inference(
             "started_at": str(time.time()),
         })
 
-        if job_id in LOCAL_JOBS:
-            LOCAL_JOBS[job_id]["status"] = "processing"
-            LOCAL_JOBS[job_id]["attempt"] = attempt
+        local_state.update_job(
+            job_id,
+            {
+                "status": "processing",
+                "attempt": attempt,
+                "started_at": time.time(),
+            },
+        )
         progress.update(0, "Job picked up by GPU worker")
         logger.info(f"[WORKER] Starting job {job_id} (brand: {brand_id}, attempt: {attempt})")
 
@@ -246,20 +250,21 @@ def run_tryon_inference(
         safe_redis_hset(r, job_key, update_data)
         safe_redis_expire(r, job_key, JOB_TTL_SECONDS)
 
-        try:
-            from local_state import LOCAL_JOBS
-            if job_id in LOCAL_JOBS:
-                if LOCAL_JOBS[job_id].get("started_at"):
-                    processing_time = time.time() - float(LOCAL_JOBS[job_id]["started_at"])
-                LOCAL_JOBS[job_id]["status"] = "completed"
-                LOCAL_JOBS[job_id]["imageUrl"] = image_url
-                LOCAL_JOBS[job_id]["thumbUrl"] = thumb_url
-                LOCAL_JOBS[job_id]["progressPct"] = 100
-                LOCAL_JOBS[job_id]["progressDetail"] = "Render complete"
-                if recommendation:
-                    LOCAL_JOBS[job_id]["recommendation"] = recommendation
-        except Exception:
-            pass
+        job_snapshot = local_state.get_job(job_id)
+        if job_snapshot and job_snapshot.get("started_at"):
+            processing_time = time.time() - float(job_snapshot["started_at"])
+
+        local_state.update_job(
+            job_id,
+            {
+                "status": "completed",
+                "imageUrl": image_url,
+                "thumbUrl": thumb_url,
+                "progressPct": 100,
+                "progressDetail": "Render complete",
+                **({"recommendation": recommendation} if recommendation else {}),
+            },
+        )
 
         logger.info(f"[WORKER] Job {job_id} completed in {processing_time:.2f}s. Image: {image_url}")
 
@@ -326,5 +331,7 @@ if __name__ == '__main__':
                         print(f"Error performing job {job_id_str}:\n{traceback.format_exc()}")
                     break
             
+            # Idle polling only when running this file as standalone RQ poller.
+            # FastAPI BackgroundTasks use run_tryon_inference directly — no sleep on that path.
             if not job_found:
-                time.sleep(2)
+                time.sleep(0)
