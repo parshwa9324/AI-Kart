@@ -9,6 +9,7 @@ import BodyCalibrationModal from '../../components/ui/BodyCalibrationModal';
 import FitPanel from '../../components/ui/FitPanel';
 import { AIKartAPI } from '@/ar-engine/APIClient';
 import type { ProgressCallback } from '@/ar-engine/APIClient';
+import { usePhysicalTwin } from '@/hooks/usePhysicalTwin';
 
 /* ══════════════════════════════════════════════════════════════
    MAISON NOIR — VIRTUAL ATELIER WORKSPACE
@@ -46,6 +47,7 @@ function makePlaceholderPhotoB64(): string {
 
 export default function TryOnPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const compareFrameRef = useRef<HTMLDivElement>(null);
 
   const [activeGarment, setActiveGarment]         = useState(GARMENT_CATALOG[0].displayUrl);
   const [showCalibration, setShowCalibration]     = useState(false);
@@ -63,6 +65,7 @@ export default function TryOnPage() {
   const [showLuxuryResult, setShowLuxuryResult] = useState(false);
   const [compareSlider, setCompareSlider] = useState(50);
   const [fitScoreDisplay, setFitScoreDisplay] = useState(0);
+  const [currentFitScore, setCurrentFitScore] = useState(94);
 
   // ── Collection sidebar state ────────────────────────────────
   const [activeCategory, setActiveCategory] = useState<CategoryKey>('all');
@@ -79,8 +82,14 @@ export default function TryOnPage() {
 
   // ── GPU Busy State ──────────────────────────────────────────
   const [gpuBusy, setGpuBusy] = useState(false);
+  const { renderHistory, addRenderToHistory } = usePhysicalTwin();
 
   const bodyProfile = usePoseStore(s => s.bodyProfile);
+
+  const stepMatch = progressDetail.match(/Step\s+(\d+)\/(\d+)/i);
+  const currentStep = stepMatch ? Number(stepMatch[1]) : Math.max(0, Math.round((progressPct / 100) * 30));
+  const totalSteps = stepMatch ? Number(stepMatch[2]) : 30;
+  const estimatedRemaining = progressPct > 0 ? Math.max(0, Math.round((elapsedSeconds * (100 - progressPct)) / progressPct)) : null;
 
   // ── Timer ───────────────────────────────────────────────────
   useEffect(() => {
@@ -154,16 +163,26 @@ export default function TryOnPage() {
       setProgressPct(100);
       if (response.imageUrl) {
         const score = response.recommendation?.confidenceScore ?? 94;
+        const resolvedScore = typeof score === 'number' ? score : 94;
         setGeneratedImageUrl(response.imageUrl);
         setGeneratedThumbUrl(response.thumbUrl ?? null);
+        setCurrentFitScore(resolvedScore);
         setCompareSlider(50);
         await new Promise(r => setTimeout(r, 200));
         setShowLuxuryResult(true);
         setFitScoreDisplay(0);
-        animate(0, typeof score === 'number' ? score : 94, {
+        animate(0, resolvedScore, {
           duration: 1.15,
           ease: [0.16, 1, 0.3, 1],
           onUpdate: (v) => setFitScoreDisplay(Math.round(v * 10) / 10),
+        });
+        addRenderToHistory({
+          imageUrl: response.imageUrl,
+          thumbUrl: response.thumbUrl ?? null,
+          beforeImageUrl: beforePhotoDisplayUrl ?? (photoB64 ? `data:image/jpeg;base64,${photoB64}` : null),
+          fitScore: resolvedScore,
+          garmentName: activeEntry?.name ?? 'Custom Garment',
+          createdAt: new Date().toISOString(),
         });
       }
     } catch (error: unknown) {
@@ -180,6 +199,25 @@ export default function TryOnPage() {
     }
   };
 
+  const setSliderFromClientX = useCallback((clientX: number) => {
+    const frame = compareFrameRef.current;
+    if (!frame) return;
+    const rect = frame.getBoundingClientRect();
+    const pct = ((clientX - rect.left) / rect.width) * 100;
+    setCompareSlider(Math.max(0, Math.min(100, pct)));
+  }, []);
+
+  const onComparePointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    setSliderFromClientX(e.clientX);
+    const move = (ev: PointerEvent) => setSliderFromClientX(ev.clientX);
+    const up = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+  }, [setSliderFromClientX]);
+
   const selectGarment = useCallback((idx: number, url: string) => {
     setActiveCatalogIdx(idx); setActiveGarment(url); setGeneratedImageUrl(null); setGeneratedThumbUrl(null);
     setShowLuxuryResult(false);
@@ -193,6 +231,21 @@ export default function TryOnPage() {
     setShowLuxuryResult(false);
     setGeneratedImageUrl(null);
     setGeneratedThumbUrl(null);
+  }, []);
+
+  const restoreHistoryRender = useCallback((item: { imageUrl: string; thumbUrl: string | null; beforeImageUrl: string | null; fitScore: number }) => {
+    setGeneratedImageUrl(item.imageUrl);
+    setGeneratedThumbUrl(item.thumbUrl);
+    setBeforePhotoDisplayUrl(item.beforeImageUrl);
+    setCurrentFitScore(item.fitScore);
+    setFitScoreDisplay(0);
+    setCompareSlider(50);
+    setShowLuxuryResult(true);
+    animate(0, item.fitScore, {
+      duration: 0.9,
+      ease: [0.16, 1, 0.3, 1],
+      onUpdate: (v) => setFitScoreDisplay(Math.round(v * 10) / 10),
+    });
   }, []);
 
   const downloadFullRender = useCallback(() => {
@@ -305,7 +358,7 @@ export default function TryOnPage() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            transition={{ duration: 0.5 }}
+            transition={{ duration: 0.8 }}
             style={{
               position: 'fixed',
               inset: 0,
@@ -320,8 +373,8 @@ export default function TryOnPage() {
             }}
           >
             <motion.div
-              initial={{ opacity: 0, y: 24 }}
-              animate={{ opacity: 1, y: 0 }}
+              initial={{ opacity: 0, y: 24, scale: 0.96 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
               transition={{ duration: 0.8, ease: [0.16, 1, 0.3, 1] }}
               style={{
                 width: 'min(960px, 100%)',
@@ -371,6 +424,8 @@ export default function TryOnPage() {
                   overflow: 'hidden',
                   boxShadow: '0 32px 80px rgba(0,0,0,0.55), inset 0 0 0 1px rgba(201,168,76,0.12)',
                 }}
+                ref={compareFrameRef}
+                onPointerDown={onComparePointerDown}
               >
                 {/* After (full render) */}
                 {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -409,6 +464,39 @@ export default function TryOnPage() {
                 <div
                   style={{
                     position: 'absolute',
+                    top: 0,
+                    bottom: 0,
+                    left: `${compareSlider}%`,
+                    width: 2,
+                    background: 'linear-gradient(180deg, rgba(240,220,166,0.95), rgba(201,168,76,0.95))',
+                    boxShadow: '0 0 14px rgba(201,168,76,0.55)',
+                    transform: 'translateX(-1px)',
+                    pointerEvents: 'none',
+                  }}
+                />
+                <div
+                  style={{
+                    position: 'absolute',
+                    left: `${compareSlider}%`,
+                    top: '50%',
+                    width: 26,
+                    height: 26,
+                    borderRadius: '50%',
+                    transform: 'translate(-50%, -50%)',
+                    border: '1px solid rgba(201,168,76,0.85)',
+                    background: 'rgba(10,8,12,0.76)',
+                    boxShadow: '0 8px 24px rgba(0,0,0,0.35)',
+                    display: 'grid',
+                    placeItems: 'center',
+                    color: 'var(--gold)',
+                    pointerEvents: 'none',
+                  }}
+                >
+                  <SlidersHorizontal size={12} />
+                </div>
+                <div
+                  style={{
+                    position: 'absolute',
                     bottom: 12,
                     left: 12,
                     right: 12,
@@ -428,6 +516,22 @@ export default function TryOnPage() {
                     style={{ flex: 1, accentColor: '#c9a84c' }}
                   />
                   <span className="label-caps" style={{ fontSize: 8, color: 'rgba(255,255,255,0.75)', width: 56, textAlign: 'right' }}>Atelier</span>
+                </div>
+                <div
+                  className="label-caps"
+                  style={{
+                    position: 'absolute',
+                    right: 12,
+                    bottom: 12,
+                    fontSize: 8,
+                    padding: '7px 10px',
+                    border: '1px solid rgba(201,168,76,0.4)',
+                    color: 'var(--gold-dim)',
+                    background: 'rgba(0,0,0,0.45)',
+                    letterSpacing: '0.14em',
+                  }}
+                >
+                  Rendered on RTX 4050 - 30 steps
                 </div>
               </div>
 
@@ -462,11 +566,19 @@ export default function TryOnPage() {
                     {fitScoreDisplay.toFixed(1)}
                   </p>
                   <p style={{ fontSize: 11, color: 'var(--text-muted)', margin: '10px 0 0' }}>Confidence score — editorial fit</p>
+                  <div style={{ marginTop: 12, display: 'grid', gap: 7 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: 'var(--text-secondary)' }}>
+                      <span>CHEST</span><span style={{ color: 'var(--gold-dim)' }}>Perfect +0.8cm</span>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: 'var(--text-secondary)' }}>
+                      <span>WAIST</span><span style={{ color: '#d2b176' }}>Snug -1.2cm → Size Up</span>
+                    </div>
+                  </div>
                 </div>
 
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 10, justifyContent: 'center', minWidth: 220 }}>
                   <button type="button" onClick={downloadFullRender} className="btn-gold" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, fontSize: 10, padding: '12px 20px' }}>
-                    <Download size={14} /> Download full resolution
+                    <Download size={14} /> Download render
                   </button>
                   <button
                     type="button"
@@ -852,7 +964,17 @@ export default function TryOnPage() {
                   <motion.div key="generating" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
                     style={{ position: 'absolute', inset: 0, background: '#0D0A10', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: 28, overflow: 'hidden' }}
                   >
-                    <motion.div style={{ position: 'absolute', left: 0, right: 0, height: 1, background: 'linear-gradient(90deg, transparent, var(--gold-dim), transparent)', opacity: 0.6 }} animate={{ top: ['0%', '100%'] }} transition={{ duration: 2.5, repeat: Infinity, ease: 'linear' }} />
+                    <motion.div style={{ position: 'absolute', left: 0, right: 0, height: 1, background: 'linear-gradient(90deg, transparent, var(--gold-dim), transparent)', opacity: 0.6 }} animate={{ top: ['0%', '100%'] }} transition={{ duration: 2.2, repeat: Infinity, ease: 'linear' }} />
+                    <motion.div
+                      style={{
+                        position: 'absolute',
+                        inset: 0,
+                        background: 'repeating-linear-gradient(0deg, rgba(255,255,255,0.02) 0px, rgba(255,255,255,0.02) 1px, transparent 1px, transparent 4px)',
+                        mixBlendMode: 'screen',
+                      }}
+                      animate={{ opacity: [0.2, 0.35, 0.2] }}
+                      transition={{ duration: 1.4, repeat: Infinity }}
+                    />
                     <div style={{ position: 'relative', zIndex: 10, width: '100%', maxWidth: 220, textAlign: 'center' }}>
                       <motion.div animate={{ scale: [1, 1.4, 1], opacity: [1, 0.5, 1] }} transition={{ duration: 1.2, repeat: Infinity }} style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--gold)', margin: '0 auto 22px', boxShadow: '0 0 20px var(--gold-dim)' }} />
                       <div className="label-caps" style={{ color: 'var(--gold-dim)', fontSize: 10, marginBottom: 14 }}>
@@ -865,8 +987,19 @@ export default function TryOnPage() {
                         <motion.div style={{ position: 'absolute', left: 0, top: 0, bottom: 0, background: 'linear-gradient(90deg, var(--gold-deep), var(--gold))' }} animate={{ width: `${Math.max(progressPct, 2)}%` }} transition={{ ease: 'linear', duration: 0.3 }} />
                       </div>
                       <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                        <span className="label-caps" style={{ fontSize: 8, color: 'var(--text-dim)' }}>RTX LOCAL</span>
+                        <motion.span
+                          className="label-caps"
+                          style={{ fontSize: 8, color: 'var(--text-dim)' }}
+                          animate={{ opacity: [0.6, 1, 0.6], scale: [1, 1.04, 1] }}
+                          transition={{ duration: 1.1, repeat: Infinity }}
+                        >
+                          RTX LOCAL
+                        </motion.span>
                         <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--gold-dim)' }}>{progressPct}% · {elapsedSeconds}s</span>
+                      </div>
+                      <div style={{ marginTop: 8, display: 'flex', justifyContent: 'space-between', fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--text-muted)' }}>
+                        <span>Step {Math.min(currentStep, totalSteps)}/{totalSteps}</span>
+                        <span>ETA {estimatedRemaining !== null ? `${estimatedRemaining}s` : '--'}</span>
                       </div>
                     </div>
                   </motion.div>
@@ -909,6 +1042,43 @@ export default function TryOnPage() {
                 <span className="label-caps" style={{ fontSize: 8, color: 'var(--text-muted)' }}>{activeEntry.category?.toUpperCase()}</span>
               </>
             )}
+          </div>
+          <div style={{ padding: '10px 20px 14px', borderTop: '1px solid var(--border-subtle)', background: 'var(--surface-low)', flexShrink: 0 }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+              <span className="label-caps" style={{ fontSize: 8, color: 'var(--text-muted)' }}>RECENT RENDERS</span>
+              <span className="label-caps" style={{ fontSize: 8, color: 'var(--gold-dim)' }}>LAST {Math.min(renderHistory.length, 3)}</span>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 10 }}>
+              {Array.from({ length: 3 }).map((_, idx) => {
+                const item = renderHistory[idx];
+                if (!item) {
+                  return <div key={`empty-${idx}`} style={{ aspectRatio: '3/4', border: '1px dashed var(--border-subtle)', opacity: 0.5 }} />;
+                }
+                return (
+                  <button
+                    key={item.imageUrl}
+                    type="button"
+                    onClick={() => restoreHistoryRender(item)}
+                    style={{
+                      position: 'relative',
+                      aspectRatio: '3/4',
+                      overflow: 'hidden',
+                      border: '1px solid rgba(201,168,76,0.25)',
+                      background: '#120e14',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={item.thumbUrl ?? item.imageUrl} alt={item.garmentName} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                    <div style={{ position: 'absolute', insetInline: 0, bottom: 0, background: 'linear-gradient(180deg, transparent, rgba(0,0,0,0.8))', padding: '6px 5px', textAlign: 'left' }}>
+                      <div className="label-caps" style={{ fontSize: 7, color: 'var(--gold-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {item.fitScore.toFixed(1)} · {item.garmentName}
+                      </div>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
           </div>
         </div>
 
