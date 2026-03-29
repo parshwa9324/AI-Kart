@@ -64,6 +64,9 @@ function preloadImage(url: string): Promise<void> {
 export default function TryOnPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const compareFrameRef = useRef<HTMLDivElement>(null);
+  const resultDialogRef = useRef<HTMLDivElement>(null);
+  const closeResultButtonRef = useRef<HTMLButtonElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const requestSeqRef = useRef(0);
   const mountedRef = useRef(true);
   const gpuBusyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -87,6 +90,7 @@ export default function TryOnPage() {
   const [fitScoreDisplay, setFitScoreDisplay] = useState(0);
   const [actionToast, setActionToast] = useState<string | null>(null);
   const [activeHistoryUrl, setActiveHistoryUrl] = useState<string | null>(null);
+  const [presentationMode, setPresentationMode] = useState(false);
 
   // ── Collection sidebar state ────────────────────────────────
   const [activeCategory, setActiveCategory] = useState<CategoryKey>('all');
@@ -136,6 +140,20 @@ export default function TryOnPage() {
       if (fitScoreAnimStopRef.current) fitScoreAnimStopRef.current();
     };
   }, []);
+
+  useEffect(() => {
+    if (!showLuxuryResult) {
+      document.body.style.overflow = '';
+      return;
+    }
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    const t = setTimeout(() => closeResultButtonRef.current?.focus(), 40);
+    return () => {
+      clearTimeout(t);
+      document.body.style.overflow = prevOverflow;
+    };
+  }, [showLuxuryResult]);
 
   useEffect(() => {
     if (!actionToast) return;
@@ -381,13 +399,48 @@ export default function TryOnPage() {
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+        e.preventDefault();
+        if (!isGenerating) handleGenerateFit();
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        searchInputRef.current?.focus();
+        return;
+      }
       if (e.key !== 'Escape') return;
       if (showLuxuryResult) setShowLuxuryResult(false);
       if (gpuBusy) setGpuBusy(false);
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [gpuBusy, showLuxuryResult]);
+  }, [gpuBusy, handleGenerateFit, isGenerating, showLuxuryResult]);
+
+  useEffect(() => {
+    if (!showLuxuryResult) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'Tab') return;
+      const root = resultDialogRef.current;
+      if (!root) return;
+      const focusables = root.querySelectorAll<HTMLElement>(
+        'button, a, input, [tabindex]:not([tabindex="-1"])'
+      );
+      if (focusables.length === 0) return;
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
+      const current = document.activeElement as HTMLElement | null;
+      if (e.shiftKey && current === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && current === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [showLuxuryResult]);
 
   useEffect(() => {
     return () => {
@@ -508,6 +561,9 @@ export default function TryOnPage() {
               padding: 'clamp(16px, 4vw, 48px)',
               overflow: 'auto',
             }}
+            onClick={(e) => {
+              if (e.target === e.currentTarget) closeLuxuryResult();
+            }}
           >
             <motion.div
               initial={{ opacity: 0, y: 24, scale: 0.96 }}
@@ -520,6 +576,7 @@ export default function TryOnPage() {
                 flexDirection: 'column',
                 gap: 24,
               }}
+              ref={resultDialogRef}
             >
               <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16 }}>
                 <div>
@@ -532,6 +589,7 @@ export default function TryOnPage() {
                   type="button"
                   onClick={closeLuxuryResult}
                   aria-label="Close"
+                  ref={closeResultButtonRef}
                   style={{
                     flexShrink: 0,
                     width: 40,
@@ -793,6 +851,15 @@ export default function TryOnPage() {
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <button
+            type="button"
+            onClick={() => setPresentationMode((v) => !v)}
+            className="btn-ghost"
+            style={{ fontSize: 9, padding: '7px 12px' }}
+            title="Presentation mode. Shortcuts: Ctrl/Cmd+Enter render, Ctrl/Cmd+K search."
+          >
+            {presentationMode ? 'PRESENTATION ON' : 'PRESENTATION OFF'}
+          </button>
           <input ref={portraitInputRef} type="file" accept="image/*" capture="environment" className="sr-only" style={{ position: 'absolute', width: 1, height: 1, opacity: 0 }} onChange={handlePortraitFile} />
           <button
             type="button"
@@ -822,12 +889,12 @@ export default function TryOnPage() {
       </header>
 
       {/* ── THREE-PANEL WORKSPACE ────────────────────────────── */}
-      <div style={{ flex: 1, display: 'grid', gridTemplateColumns: '340px 1fr 300px', overflow: 'hidden', height: 'calc(100vh - 56px)' }}>
+      <div style={{ flex: 1, display: 'grid', gridTemplateColumns: presentationMode ? '1fr' : '340px 1fr 300px', overflow: 'hidden', height: 'calc(100vh - 56px)' }}>
 
         {/* ══════════════════════════════════════════════════════
             LEFT: LUXURY COLLECTION INDEX
             ══════════════════════════════════════════════════════ */}
-        <aside style={{ borderRight: '1px solid var(--border-subtle)', background: 'var(--surface-low)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+        <aside style={{ borderRight: '1px solid var(--border-subtle)', background: 'var(--surface-low)', display: presentationMode ? 'none' : 'flex', flexDirection: 'column', overflow: 'hidden' }}>
 
           {/* ── Panel Header ─── */}
           <div style={{ padding: '16px 16px 0', borderBottom: '1px solid var(--border-subtle)', flexShrink: 0 }}>
@@ -875,6 +942,7 @@ export default function TryOnPage() {
             }}>
               <Search size={11} style={{ color: searchFocused ? 'var(--gold)' : 'var(--text-muted)', flexShrink: 0, transition: 'color 0.2s' }} />
               <input
+                ref={searchInputRef}
                 value={searchQuery}
                 onChange={e => setSearchQuery(e.target.value)}
                 onFocus={() => setSearchFocused(true)}
@@ -1128,13 +1196,13 @@ export default function TryOnPage() {
                     />
                     <div style={{ position: 'relative', zIndex: 10, width: '100%', maxWidth: 220, textAlign: 'center' }}>
                       <motion.div animate={{ scale: [1, 1.4, 1], opacity: [1, 0.5, 1] }} transition={{ duration: 1.2, repeat: Infinity }} style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--gold)', margin: '0 auto 22px', boxShadow: '0 0 20px var(--gold-dim)' }} />
-                      <div className="label-caps" style={{ color: 'var(--gold-dim)', fontSize: 10, marginBottom: 14 }}>
+                      <div className="label-caps" style={{ color: 'var(--gold-dim)', fontSize: presentationMode ? 12 : 10, marginBottom: 14 }}>
                         {generationPhase === 'queued' ? 'INITIALIZING ENGINE' : generationPhase === 'processing' ? 'NEURAL COMPOSITOR ACTIVE' : 'HOLOGRAPHIC REVEAL'}
                       </div>
                       <div className="label-caps" style={{ color: 'var(--text-muted)', fontSize: 8, marginBottom: 10 }}>
                         STAGE: {stageLabel}
                       </div>
-                      <div style={{ fontSize: 10, color: 'rgba(201,168,76,0.4)', fontFamily: 'var(--font-mono)', marginBottom: 20, minHeight: 24 }}>
+                      <div aria-live="polite" style={{ fontSize: presentationMode ? 11 : 10, color: 'rgba(201,168,76,0.4)', fontFamily: 'var(--font-mono)', marginBottom: 20, minHeight: 24 }}>
                         {'> '}{progressDetail || 'Loading neural render engine...'}
                       </div>
                       <div style={{ height: 1, background: 'rgba(255,255,255,0.06)', position: 'relative', marginBottom: 8 }}>
@@ -1241,7 +1309,7 @@ export default function TryOnPage() {
         {/* ══════════════════════════════════════════════════════
             RIGHT: FIT INTELLIGENCE PANEL
             ══════════════════════════════════════════════════════ */}
-        <aside style={{ borderLeft: '1px solid var(--border-subtle)', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+        <aside style={{ borderLeft: '1px solid var(--border-subtle)', overflow: 'hidden', display: presentationMode ? 'none' : 'flex', flexDirection: 'column' }}>
           <AnimatePresence mode="wait">
             <FitPanel catalogEntry={GARMENT_CATALOG[activeCatalogIdx] ?? null} />
           </AnimatePresence>
