@@ -38,7 +38,7 @@ from database import get_db, AsyncSession
 from sqlalchemy import select
 from models import Brand as BrandModel, Garment as GarmentModel
 from job_queue import create_tryon_job, get_job_status, get_queue_health, JobStatus
-from config import USE_MOCK_ML, SLA, RESULT_CACHE_DIR
+from config import USE_MOCK_ML, SLA, RESULT_CACHE_DIR, VTON_SKIP_STARTUP_WARMUP
 from size_engine import (
     BodyMeasurements, GarmentSpec, GarmentMeasurements, MaterialSpec,
     analyze_garment_fit, recommend_size, compare_brand_sizes,
@@ -154,6 +154,42 @@ _renders_dir.mkdir(parents=True, exist_ok=True)
 app.mount("/renders", StaticFiles(directory=str(_renders_dir)), name="renders")
 
 
+@app.on_event("startup")
+async def startup_event() -> None:
+    """Pre-load IDM-VTON once so first /tryon/render is not blocked on from_pretrained."""
+    if USE_MOCK_ML or VTON_SKIP_STARTUP_WARMUP:
+        logger.info(
+            "[STARTUP] Skipping VTON preload (mock ML or VTON_SKIP_STARTUP_WARMUP=1)"
+        )
+        return
+
+    import asyncio
+    import concurrent.futures
+
+    logger.info("[STARTUP] Pre-loading VTON model...")
+    logger.info("[STARTUP] This takes 2-4 minutes on first run")
+    logger.info("[STARTUP] Subsequent starts will be faster")
+
+    loop = asyncio.get_running_loop()
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+
+    def _preload() -> None:
+        try:
+            from local_vton_engine import load_pipeline
+
+            pipe = load_pipeline()
+            if pipe is not None:
+                logger.info("[STARTUP] VTON model loaded and ready")
+                logger.info("[STARTUP] First render will be fast")
+            else:
+                logger.warning("[STARTUP] VTON pipeline returned None")
+        except Exception as e:
+            logger.error(f"[STARTUP] Model preload failed: {e}", exc_info=True)
+
+    loop.run_in_executor(executor, _preload)
+    logger.info("[STARTUP] Model loading started in background")
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Request ID Middleware — Audit Trail
 # Every HTTP request gets a unique UUID for tracing through logs
@@ -225,6 +261,16 @@ class TryOnRenderResponse(BaseModel):
     slaWarning: Optional[str] = None
     attempt: Optional[int] = None
     maxRetries: Optional[int] = None
+
+
+class TryOnTelemetryEvent(BaseModel):
+    event: str = Field(..., min_length=1, max_length=80)
+    ts: str = Field(..., min_length=8, max_length=64)
+    payload: Optional[Dict[str, Any]] = None
+
+
+class TryOnTelemetryBatchRequest(BaseModel):
+    events: List[TryOnTelemetryEvent] = Field(default_factory=list)
 
 class BodyScanRequest(BaseModel):
     """Phase 18: Body scan with BMI-aware precision."""
@@ -299,6 +345,26 @@ def health_check():
             "POST /api/v1/auth/token",
         ]
     )
+
+
+@app.post("/api/v1/telemetry/tryon")
+async def ingest_tryon_telemetry(batch: TryOnTelemetryBatchRequest, request: Request):
+    """
+    Lightweight telemetry sink for try-on UX instrumentation.
+    Intentionally tolerant: accepts events without blocking user flow.
+    """
+    accepted_events = batch.events[:200]
+    if not accepted_events:
+        return {"status": "ok", "accepted": 0}
+
+    client_ip = request.client.host if request.client else "unknown"
+    logger.info(
+        "[TELEMETRY] tryon_events accepted=%s client_ip=%s first_event=%s",
+        len(accepted_events),
+        client_ip,
+        accepted_events[0].event,
+    )
+    return {"status": "ok", "accepted": len(accepted_events)}
 
 
 @app.post("/api/v1/auth/token")
@@ -438,9 +504,12 @@ async def render_virtual_tryon(
                 attempt=1
             )
         except Exception as e:
-            logger.error(f"Background rendering failed: {e}", exc_info=True)
+            import traceback
+            tb = traceback.format_exc()
+            logger.error("RENDER FAILED: %s\n%s", e, tb)
             LOCAL_JOBS[job_id]["status"] = "failed"
             LOCAL_JOBS[job_id]["error"] = str(e)
+            LOCAL_JOBS[job_id]["progressDetail"] = str(e)
 
 
     # Dispatch to FastAPI threadpool
