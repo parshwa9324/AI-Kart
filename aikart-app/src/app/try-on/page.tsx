@@ -52,6 +52,15 @@ function makePlaceholderPhotoB64(): string {
   return c.toDataURL('image/jpeg', 0.92).split(',')[1] ?? '';
 }
 
+function preloadImage(url: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve();
+    img.onerror = () => reject(new Error('Failed to preload image'));
+    img.src = url;
+  });
+}
+
 export default function TryOnPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const compareFrameRef = useRef<HTMLDivElement>(null);
@@ -97,7 +106,20 @@ export default function TryOnPage() {
   const stepMatch = progressDetail.match(/Step\s+(\d+)\/(\d+)/i);
   const currentStep = stepMatch ? Number(stepMatch[1]) : Math.max(0, Math.round((progressPct / 100) * 30));
   const totalSteps = stepMatch ? Number(stepMatch[2]) : 30;
-  const estimatedRemaining = progressPct > 0 ? Math.max(0, Math.round((elapsedSeconds * (100 - progressPct)) / progressPct)) : null;
+  const pctEta = progressPct > 0 ? Math.max(0, Math.round((elapsedSeconds * (100 - progressPct)) / progressPct)) : null;
+  const stepEta = currentStep > 0 && totalSteps > currentStep
+    ? Math.max(0, Math.round((elapsedSeconds / currentStep) * (totalSteps - currentStep)))
+    : null;
+  const estimatedRemaining = stepEta ?? pctEta;
+  const stageLabel = useMemo(() => {
+    const d = progressDetail.toLowerCase();
+    if (d.includes('loading') || d.includes('initializing')) return 'MODEL PREP';
+    if (d.includes('diffusing') || d.includes('step')) return 'DIFFUSION';
+    if (d.includes('shadow')) return 'LIGHT PASS';
+    if (d.includes('texture') || d.includes('refining')) return 'DETAIL PASS';
+    if (d.includes('saving') || d.includes('upload')) return 'FINALIZING';
+    return generationPhase === 'uploading' ? 'FINALIZING' : 'NEURAL COMPOSITOR';
+  }, [generationPhase, progressDetail]);
 
   const revealDuration = prefersReducedMotion ? 0.2 : 0.8;
   const scoreAnimDuration = prefersReducedMotion ? 0.35 : 1.15;
@@ -193,7 +215,8 @@ export default function TryOnPage() {
         setGeneratedImageUrl(response.imageUrl);
         setGeneratedThumbUrl(response.thumbUrl ?? null);
         setCompareSlider(50);
-        await new Promise(r => setTimeout(r, 200));
+        await preloadImage(response.imageUrl).catch(() => undefined);
+        await new Promise(r => setTimeout(r, prefersReducedMotion ? 60 : 160));
         setShowLuxuryResult(true);
         setFitScoreDisplay(0);
         animate(0, resolvedScore, {
@@ -263,17 +286,20 @@ export default function TryOnPage() {
   }, []);
 
   const restoreHistoryRender = useCallback((item: { imageUrl: string; thumbUrl: string | null; beforeImageUrl: string | null; fitScore: number }) => {
-    setGeneratedImageUrl(item.imageUrl);
-    setGeneratedThumbUrl(item.thumbUrl);
-    setBeforePhotoDisplayUrl(item.beforeImageUrl);
-    setFitScoreDisplay(0);
-    setCompareSlider(50);
-    setShowLuxuryResult(true);
-    animate(0, item.fitScore, {
-      duration: prefersReducedMotion ? 0.25 : 0.9,
-      ease: [0.16, 1, 0.3, 1],
-      onUpdate: (v) => setFitScoreDisplay(Math.round(v * 10) / 10),
-    });
+    (async () => {
+      await preloadImage(item.imageUrl).catch(() => undefined);
+      setGeneratedImageUrl(item.imageUrl);
+      setGeneratedThumbUrl(item.thumbUrl);
+      setBeforePhotoDisplayUrl(item.beforeImageUrl);
+      setFitScoreDisplay(0);
+      setCompareSlider(50);
+      setShowLuxuryResult(true);
+      animate(0, item.fitScore, {
+        duration: prefersReducedMotion ? 0.25 : 0.9,
+        ease: [0.16, 1, 0.3, 1],
+        onUpdate: (v) => setFitScoreDisplay(Math.round(v * 10) / 10),
+      });
+    })();
   }, [prefersReducedMotion]);
 
   const downloadFullRender = useCallback(() => {
@@ -301,6 +327,10 @@ export default function TryOnPage() {
         await navigator.share({ title: 'AI-Kart Atelier', text: 'Virtual try-on render', url });
         setActionToast('Share sheet opened');
       } else {
+        if (!window.isSecureContext || !navigator.clipboard) {
+          setActionToast('Secure context required to copy');
+          return;
+        }
         await navigator.clipboard.writeText(url);
         setActionToast('Render URL copied');
       }
@@ -1060,6 +1090,9 @@ export default function TryOnPage() {
                       <motion.div animate={{ scale: [1, 1.4, 1], opacity: [1, 0.5, 1] }} transition={{ duration: 1.2, repeat: Infinity }} style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--gold)', margin: '0 auto 22px', boxShadow: '0 0 20px var(--gold-dim)' }} />
                       <div className="label-caps" style={{ color: 'var(--gold-dim)', fontSize: 10, marginBottom: 14 }}>
                         {generationPhase === 'queued' ? 'INITIALIZING ENGINE' : generationPhase === 'processing' ? 'NEURAL COMPOSITOR ACTIVE' : 'HOLOGRAPHIC REVEAL'}
+                      </div>
+                      <div className="label-caps" style={{ color: 'var(--text-muted)', fontSize: 8, marginBottom: 10 }}>
+                        STAGE: {stageLabel}
                       </div>
                       <div style={{ fontSize: 10, color: 'rgba(201,168,76,0.4)', fontFamily: 'var(--font-mono)', marginBottom: 20, minHeight: 24 }}>
                         {'> '}{progressDetail || 'Loading neural render engine...'}
