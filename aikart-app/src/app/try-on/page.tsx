@@ -64,6 +64,10 @@ function preloadImage(url: string): Promise<void> {
 export default function TryOnPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const compareFrameRef = useRef<HTMLDivElement>(null);
+  const requestSeqRef = useRef(0);
+  const mountedRef = useRef(true);
+  const gpuBusyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const fitScoreAnimStopRef = useRef<(() => void) | null>(null);
 
   const [activeGarment, setActiveGarment]         = useState(GARMENT_CATALOG[0].displayUrl);
   const [showCalibration, setShowCalibration]     = useState(false);
@@ -82,6 +86,7 @@ export default function TryOnPage() {
   const [compareSlider, setCompareSlider] = useState(50);
   const [fitScoreDisplay, setFitScoreDisplay] = useState(0);
   const [actionToast, setActionToast] = useState<string | null>(null);
+  const [activeHistoryUrl, setActiveHistoryUrl] = useState<string | null>(null);
 
   // ── Collection sidebar state ────────────────────────────────
   const [activeCategory, setActiveCategory] = useState<CategoryKey>('all');
@@ -123,6 +128,14 @@ export default function TryOnPage() {
 
   const revealDuration = prefersReducedMotion ? 0.2 : 0.8;
   const scoreAnimDuration = prefersReducedMotion ? 0.35 : 1.15;
+
+  useEffect(() => {
+    return () => {
+      mountedRef.current = false;
+      if (gpuBusyTimeoutRef.current) clearTimeout(gpuBusyTimeoutRef.current);
+      if (fitScoreAnimStopRef.current) fitScoreAnimStopRef.current();
+    };
+  }, []);
 
   useEffect(() => {
     if (!actionToast) return;
@@ -183,8 +196,10 @@ export default function TryOnPage() {
   }, []);
 
   const handleGenerateFit = async () => {
+    const reqId = ++requestSeqRef.current;
     if (!bodyProfile) { setShowCalibration(true); return; }
     setIsGenerating(true);
+    setActiveHistoryUrl(null);
     setGeneratedImageUrl(null);
     setGeneratedThumbUrl(null);
     setShowLuxuryResult(false);
@@ -195,6 +210,7 @@ export default function TryOnPage() {
     }
     try {
       const onProgress: ProgressCallback = (update) => {
+        if (!mountedRef.current || reqId !== requestSeqRef.current) return;
         setProgressPct(update.progressPct);
         if (update.detail) setProgressDetail(update.detail);
         if (update.status === 'queued') setGenerationPhase('queued');
@@ -209,6 +225,7 @@ export default function TryOnPage() {
       }, onProgress);
       setGenerationPhase('uploading');
       setProgressPct(100);
+      if (!mountedRef.current || reqId !== requestSeqRef.current) return;
       if (response.imageUrl) {
         const score = response.recommendation?.confidenceScore ?? 94;
         const resolvedScore = typeof score === 'number' ? score : 94;
@@ -219,11 +236,13 @@ export default function TryOnPage() {
         await new Promise(r => setTimeout(r, prefersReducedMotion ? 60 : 160));
         setShowLuxuryResult(true);
         setFitScoreDisplay(0);
-        animate(0, resolvedScore, {
+        if (fitScoreAnimStopRef.current) fitScoreAnimStopRef.current();
+        const controls = animate(0, resolvedScore, {
           duration: scoreAnimDuration,
           ease: [0.16, 1, 0.3, 1],
           onUpdate: (v) => setFitScoreDisplay(Math.round(v * 10) / 10),
         });
+        fitScoreAnimStopRef.current = controls.stop;
         addRenderToHistory({
           imageUrl: response.imageUrl,
           thumbUrl: response.thumbUrl ?? null,
@@ -238,12 +257,18 @@ export default function TryOnPage() {
       const err = error as { status?: number; message?: string };
       if (err?.status === 503 || err?.message?.includes('GPU') || err?.message?.includes('occupied')) {
         setGpuBusy(true);
-        setTimeout(() => setGpuBusy(false), 8000);
+        if (gpuBusyTimeoutRef.current) clearTimeout(gpuBusyTimeoutRef.current);
+        gpuBusyTimeoutRef.current = setTimeout(() => {
+          if (mountedRef.current) setGpuBusy(false);
+        }, 8000);
       } else {
         console.error("Try-On ML Render Failed:", error);
+        setActionToast('Render failed. Please retry');
       }
     } finally {
-      setIsGenerating(false);
+      if (mountedRef.current && reqId === requestSeqRef.current) {
+        setIsGenerating(false);
+      }
     }
   };
 
@@ -287,18 +312,23 @@ export default function TryOnPage() {
 
   const restoreHistoryRender = useCallback((item: { imageUrl: string; thumbUrl: string | null; beforeImageUrl: string | null; fitScore: number }) => {
     (async () => {
+      const reqId = ++requestSeqRef.current;
       await preloadImage(item.imageUrl).catch(() => undefined);
+      if (!mountedRef.current || reqId !== requestSeqRef.current) return;
       setGeneratedImageUrl(item.imageUrl);
       setGeneratedThumbUrl(item.thumbUrl);
       setBeforePhotoDisplayUrl(item.beforeImageUrl);
+      setActiveHistoryUrl(item.imageUrl);
       setFitScoreDisplay(0);
       setCompareSlider(50);
       setShowLuxuryResult(true);
-      animate(0, item.fitScore, {
+      if (fitScoreAnimStopRef.current) fitScoreAnimStopRef.current();
+      const controls = animate(0, item.fitScore, {
         duration: prefersReducedMotion ? 0.25 : 0.9,
         ease: [0.16, 1, 0.3, 1],
         onUpdate: (v) => setFitScoreDisplay(Math.round(v * 10) / 10),
       });
+      fitScoreAnimStopRef.current = controls.stop;
     })();
   }, [prefersReducedMotion]);
 
@@ -348,6 +378,16 @@ export default function TryOnPage() {
     selectGarment(GARMENT_CATALOG.length + uploadedGarments.length, url);
     if (fileInputRef.current) fileInputRef.current.value = '';
   }, [uploadedGarments.length, selectGarment]);
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      if (showLuxuryResult) setShowLuxuryResult(false);
+      if (gpuBusy) setGpuBusy(false);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [gpuBusy, showLuxuryResult]);
 
   useEffect(() => {
     return () => {
@@ -1177,7 +1217,9 @@ export default function TryOnPage() {
                       position: 'relative',
                       aspectRatio: '3/4',
                       overflow: 'hidden',
-                      border: '1px solid rgba(201,168,76,0.25)',
+                      border: item.imageUrl === (activeHistoryUrl ?? generatedImageUrl)
+                        ? '1px solid rgba(201,168,76,0.85)'
+                        : '1px solid rgba(201,168,76,0.25)',
                       background: '#120e14',
                       cursor: 'pointer',
                     }}
