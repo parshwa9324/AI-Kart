@@ -170,6 +170,40 @@ async function pollUntilComplete(
 
 export const AIKartAPI = {
     /**
+     * Fire-and-forget try-on telemetry batch.
+     * Never throws to the caller; returns false on any transport issue.
+     */
+    async sendTryOnTelemetry(events: Array<{
+        event: string;
+        ts: string;
+        payload: Record<string, unknown>;
+    }>): Promise<boolean> {
+        if (events.length === 0) return true;
+        try {
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 4_000);
+            try {
+                const response = await fetch(`${BASE_URL}/api/v1/telemetry/tryon`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ events: events.slice(0, 200) }),
+                    keepalive: true,
+                    signal: controller.signal,
+                });
+                // If endpoint is unavailable in a given environment, drop silently.
+                if (response.status === 404 || response.status === 401 || response.status === 403) {
+                    return true;
+                }
+                return response.ok;
+            } finally {
+                clearTimeout(timeout);
+            }
+        } catch {
+            return false;
+        }
+    },
+
+    /**
      * Scan user's body to extract measurements.
      * Sends photo to SAM 3D Body on the backend.
      *
@@ -398,6 +432,81 @@ export const AIKartAPI = {
         return request<{ status: string; measurements: Record<string, number>; }>('/api/v1/body/scan', {
             method: 'POST',
             body: JSON.stringify({ heightCm, photo, gender }),
+        });
+    },
+
+    // ── Physical Twin — Profile Persistence ──────────────────────
+    // Connects frontend localStorage session_token to backend SQLite.
+    // Enables "Welcome back — Physical Twin restored" on repeat visits.
+
+    /**
+     * Save the user's Physical Twin body profile to persistent storage.
+     * Called after body scan calibration completes successfully.
+     */
+    async saveProfile(profile: {
+        session_token: string;
+        height_cm?: number;
+        weight_kg?: number;
+        gender?: string;
+        chest_cm?: number;
+        waist_cm?: number;
+        hip_cm?: number;
+        shoulder_cm?: number;
+        inseam_cm?: number;
+        sleeve_cm?: number;
+        neck_cm?: number;
+        scan_method?: string;
+        confidence_score?: number;
+        consent_given_at?: string;
+    }): Promise<{ status: string; session_token: string; updated_at: string }> {
+        return request('/api/v1/profile/save', {
+            method: 'POST',
+            body: JSON.stringify(profile),
+        });
+    },
+
+    /**
+     * Load a previously saved Physical Twin profile.
+     * Called on app boot with the session token from localStorage.
+     * Returns 404 if no profile exists for this token.
+     */
+    async loadProfile(sessionToken: string): Promise<{
+        status: string;
+        profile: Record<string, unknown>;
+    } | null> {
+        try {
+            return await request(`/api/v1/profile/${sessionToken}`);
+        } catch (err) {
+            if (err instanceof APIError && err.status === 404) return null;
+            throw err;
+        }
+    },
+
+    /**
+     * GDPR Right to Erasure — permanently delete all body scan data.
+     * Called when the user clicks "Delete My Data" in privacy settings.
+     */
+    async deleteProfile(sessionToken: string): Promise<{ status: string; message: string }> {
+        return request(`/api/v1/profile/${sessionToken}`, {
+            method: 'DELETE',
+        });
+    },
+
+    /**
+     * Get real-time GPU health stats for the admin dashboard.
+     * Returns VRAM usage, active renders, pipeline status.
+     */
+    async getGPUHealth(): Promise<Record<string, unknown>> {
+        return request('/api/v1/gpu/health');
+    },
+
+    /**
+     * Record GDPR Biometric Data Consent Timestamp
+     */
+    async recordConsent(session_uuid: string, consented: boolean): Promise<{ status: string }> {
+        return request('/api/v1/consent', {
+            method: 'POST',
+            body: JSON.stringify({ session_uuid, consented }),
         });
     },
 };

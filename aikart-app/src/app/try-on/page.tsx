@@ -72,9 +72,25 @@ type TryOnTelemetryEvent =
   | 'presentation_mode_toggled';
 
 type TelemetryPayload = Record<string, string | number | boolean | null | undefined>;
+type TelemetryPacket = { event: TryOnTelemetryEvent; ts: string; payload: TelemetryPayload };
+
+let telemetryFlushTimer: ReturnType<typeof setTimeout> | null = null;
+let telemetryInFlight = false;
+const telemetryQueue: TelemetryPacket[] = [];
+
+async function flushTelemetryQueue(): Promise<void> {
+  if (telemetryInFlight || telemetryQueue.length === 0) return;
+  telemetryInFlight = true;
+  const batch = telemetryQueue.splice(0, 30);
+  const ok = await AIKartAPI.sendTryOnTelemetry(batch);
+  if (!ok) {
+    telemetryQueue.unshift(...batch);
+  }
+  telemetryInFlight = false;
+}
 
 function emitTryOnTelemetry(event: TryOnTelemetryEvent, payload: TelemetryPayload): void {
-  const packet = {
+  const packet: TelemetryPacket = {
     event,
     ts: new Date().toISOString(),
     payload,
@@ -86,6 +102,16 @@ function emitTryOnTelemetry(event: TryOnTelemetryEvent, payload: TelemetryPayloa
     const existing = existingRaw ? (JSON.parse(existingRaw) as unknown[]) : [];
     const next = [...existing.slice(-199), packet];
     localStorage.setItem(key, JSON.stringify(next));
+    telemetryQueue.push(packet);
+    if (telemetryQueue.length > 300) {
+      telemetryQueue.splice(0, telemetryQueue.length - 300);
+    }
+    if (!telemetryFlushTimer) {
+      telemetryFlushTimer = setTimeout(async () => {
+        telemetryFlushTimer = null;
+        await flushTelemetryQueue();
+      }, 1500);
+    }
   } catch {
     // telemetry must never affect UX
   }
@@ -500,6 +526,20 @@ export default function TryOnPage() {
       // ignore storage failures
     }
   }, [presentationMode]);
+
+  useEffect(() => {
+    const onVisibility = () => {
+      if (document.visibilityState === 'hidden') {
+        void flushTelemetryQueue();
+      }
+    };
+    window.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('beforeunload', onVisibility);
+    return () => {
+      window.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('beforeunload', onVisibility);
+    };
+  }, []);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
