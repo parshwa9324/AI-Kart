@@ -3,7 +3,7 @@
 import { useRef, useEffect, useState, useCallback, useMemo } from 'react';
 import { GARMENT_CATALOG } from '../../data/GarmentCatalog';
 import { usePoseStore } from '../../store/PoseStore';
-import { motion, AnimatePresence, animate } from 'framer-motion';
+import { motion, AnimatePresence, animate, useReducedMotion } from 'framer-motion';
 import { Camera, Upload, Sparkles, CheckCircle2, RotateCcw, Search, SlidersHorizontal, Grid2X2, List, Download, Share2, X } from 'lucide-react';
 import BodyCalibrationModal from '../../components/ui/BodyCalibrationModal';
 import FitPanel from '../../components/ui/FitPanel';
@@ -90,6 +90,7 @@ export default function TryOnPage() {
   // ── GPU Busy State ──────────────────────────────────────────
   const [gpuBusy, setGpuBusy] = useState(false);
   const { renderHistory, addRenderToHistory } = usePhysicalTwinContext();
+  const prefersReducedMotion = useReducedMotion();
 
   const bodyProfile = usePoseStore(s => s.bodyProfile);
 
@@ -97,6 +98,9 @@ export default function TryOnPage() {
   const currentStep = stepMatch ? Number(stepMatch[1]) : Math.max(0, Math.round((progressPct / 100) * 30));
   const totalSteps = stepMatch ? Number(stepMatch[2]) : 30;
   const estimatedRemaining = progressPct > 0 ? Math.max(0, Math.round((elapsedSeconds * (100 - progressPct)) / progressPct)) : null;
+
+  const revealDuration = prefersReducedMotion ? 0.2 : 0.8;
+  const scoreAnimDuration = prefersReducedMotion ? 0.35 : 1.15;
 
   useEffect(() => {
     if (!actionToast) return;
@@ -139,6 +143,7 @@ export default function TryOnPage() {
       return matchCat && matchSearch;
     });
   }, [activeCategory, searchQuery, uploadedGarments]);
+  const activeEntry = GARMENT_CATALOG[activeCatalogIdx];
 
   // ── Generate try-on ─────────────────────────────────────────
   const handlePortraitFile = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
@@ -192,7 +197,7 @@ export default function TryOnPage() {
         setShowLuxuryResult(true);
         setFitScoreDisplay(0);
         animate(0, resolvedScore, {
-          duration: 1.15,
+          duration: scoreAnimDuration,
           ease: [0.16, 1, 0.3, 1],
           onUpdate: (v) => setFitScoreDisplay(Math.round(v * 10) / 10),
         });
@@ -225,6 +230,10 @@ export default function TryOnPage() {
     const rect = frame.getBoundingClientRect();
     const pct = ((clientX - rect.left) / rect.width) * 100;
     setCompareSlider(Math.max(0, Math.min(100, pct)));
+  }, []);
+
+  const adjustCompareSlider = useCallback((delta: number) => {
+    setCompareSlider((v) => Math.max(0, Math.min(100, v + delta)));
   }, []);
 
   const onComparePointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
@@ -261,23 +270,28 @@ export default function TryOnPage() {
     setCompareSlider(50);
     setShowLuxuryResult(true);
     animate(0, item.fitScore, {
-      duration: 0.9,
+      duration: prefersReducedMotion ? 0.25 : 0.9,
       ease: [0.16, 1, 0.3, 1],
       onUpdate: (v) => setFitScoreDisplay(Math.round(v * 10) / 10),
     });
-  }, []);
+  }, [prefersReducedMotion]);
 
   const downloadFullRender = useCallback(() => {
     if (!generatedImageUrl) return;
+    const garmentName = (activeEntry?.name ?? 'atelier-render')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '');
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
     const a = document.createElement('a');
     a.href = generatedImageUrl;
-    a.download = 'aikart-atelier-render.jpg';
+    a.download = `aikart-${garmentName}-${stamp}.jpg`;
     a.rel = 'noopener';
     document.body.appendChild(a);
     a.click();
     a.remove();
     setActionToast('Render downloaded');
-  }, [generatedImageUrl]);
+  }, [activeEntry?.name, generatedImageUrl]);
 
   const shareRender = useCallback(async () => {
     const url = generatedImageUrl;
@@ -305,7 +319,13 @@ export default function TryOnPage() {
     if (fileInputRef.current) fileInputRef.current.value = '';
   }, [uploadedGarments.length, selectGarment]);
 
-  const activeEntry = GARMENT_CATALOG[activeCatalogIdx];
+  useEffect(() => {
+    return () => {
+      uploadedGarments.forEach((g) => {
+        if (g.url.startsWith('blob:')) URL.revokeObjectURL(g.url);
+      });
+    };
+  }, [uploadedGarments]);
 
   return (
     <main style={{ minHeight: '100vh', background: 'var(--background)', color: 'var(--text-primary)', fontFamily: 'var(--font-sans)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
@@ -405,7 +425,7 @@ export default function TryOnPage() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            transition={{ duration: 0.8 }}
+            transition={{ duration: revealDuration }}
             style={{
               position: 'fixed',
               inset: 0,
@@ -422,7 +442,7 @@ export default function TryOnPage() {
             <motion.div
               initial={{ opacity: 0, y: 24, scale: 0.96 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
-              transition={{ duration: 0.8, ease: [0.16, 1, 0.3, 1] }}
+              transition={{ duration: revealDuration, ease: [0.16, 1, 0.3, 1] }}
               style={{
                 width: 'min(960px, 100%)',
                 maxHeight: 'min(92vh, 900px)',
@@ -473,6 +493,19 @@ export default function TryOnPage() {
                 }}
                 ref={compareFrameRef}
                 onPointerDown={onComparePointerDown}
+                onDoubleClick={() => setCompareSlider(50)}
+                role="slider"
+                aria-label="Before and after comparison"
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={Math.round(compareSlider)}
+                tabIndex={0}
+                onKeyDown={(e) => {
+                  if (e.key === 'ArrowLeft') { e.preventDefault(); adjustCompareSlider(-2); }
+                  if (e.key === 'ArrowRight') { e.preventDefault(); adjustCompareSlider(2); }
+                  if (e.key === 'Home') { e.preventDefault(); setCompareSlider(0); }
+                  if (e.key === 'End') { e.preventDefault(); setCompareSlider(100); }
+                }}
               >
                 {/* After (full render) */}
                 {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -1052,7 +1085,7 @@ export default function TryOnPage() {
                     </div>
                   </motion.div>
                 ) : generatedImageUrl ? (
-                  <motion.div key="result" initial={{ opacity: 0, scale: 1.02 }} animate={{ opacity: 1, scale: 1 }} transition={{ duration: 0.8, ease: [0.16, 1, 0.3, 1] }} style={{ position: 'absolute', inset: 0 }}>
+                  <motion.div key="result" initial={{ opacity: 0, scale: 1.02 }} animate={{ opacity: 1, scale: 1 }} transition={{ duration: revealDuration, ease: [0.16, 1, 0.3, 1] }} style={{ position: 'absolute', inset: 0 }}>
                     {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img src={generatedImageUrl} alt="Result" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                     <div style={{ position: 'absolute', inset: 0, background: 'linear-gradient(135deg, rgba(201,168,76,0.08), transparent)', pointerEvents: 'none' }} />
