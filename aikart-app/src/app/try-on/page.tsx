@@ -9,7 +9,7 @@ import BodyCalibrationModal from '../../components/ui/BodyCalibrationModal';
 import FitPanel from '../../components/ui/FitPanel';
 import { AIKartAPI } from '@/ar-engine/APIClient';
 import type { ProgressCallback } from '@/ar-engine/APIClient';
-import { usePhysicalTwin } from '@/hooks/usePhysicalTwin';
+import { usePhysicalTwinContext } from '@/components/PhysicalTwinProvider';
 
 /* ══════════════════════════════════════════════════════════════
    MAISON NOIR — VIRTUAL ATELIER WORKSPACE
@@ -26,6 +26,13 @@ const CATEGORIES = [
 ] as const;
 
 type CategoryKey = typeof CATEGORIES[number]['key'];
+type CatalogViewItem = {
+  name: string;
+  category: string;
+  displayUrl: string;
+  originalIdx: number;
+  isCustom: boolean;
+};
 
 // View mode: grid or list
 type ViewMode = 'grid' | 'list';
@@ -65,7 +72,7 @@ export default function TryOnPage() {
   const [showLuxuryResult, setShowLuxuryResult] = useState(false);
   const [compareSlider, setCompareSlider] = useState(50);
   const [fitScoreDisplay, setFitScoreDisplay] = useState(0);
-  const [currentFitScore, setCurrentFitScore] = useState(94);
+  const [actionToast, setActionToast] = useState<string | null>(null);
 
   // ── Collection sidebar state ────────────────────────────────
   const [activeCategory, setActiveCategory] = useState<CategoryKey>('all');
@@ -82,7 +89,7 @@ export default function TryOnPage() {
 
   // ── GPU Busy State ──────────────────────────────────────────
   const [gpuBusy, setGpuBusy] = useState(false);
-  const { renderHistory, addRenderToHistory } = usePhysicalTwin();
+  const { renderHistory, addRenderToHistory } = usePhysicalTwinContext();
 
   const bodyProfile = usePoseStore(s => s.bodyProfile);
 
@@ -90,6 +97,12 @@ export default function TryOnPage() {
   const currentStep = stepMatch ? Number(stepMatch[1]) : Math.max(0, Math.round((progressPct / 100) * 30));
   const totalSteps = stepMatch ? Number(stepMatch[2]) : 30;
   const estimatedRemaining = progressPct > 0 ? Math.max(0, Math.round((elapsedSeconds * (100 - progressPct)) / progressPct)) : null;
+
+  useEffect(() => {
+    if (!actionToast) return;
+    const t = setTimeout(() => setActionToast(null), 1800);
+    return () => clearTimeout(t);
+  }, [actionToast]);
 
   // ── Timer ───────────────────────────────────────────────────
   useEffect(() => {
@@ -104,12 +117,20 @@ export default function TryOnPage() {
 
   // ── Filtered catalog ────────────────────────────────────────
   const filteredCatalog = useMemo(() => {
-    const all = [
-      ...GARMENT_CATALOG.map((g, i) => ({ ...g, originalIdx: i, isCustom: false })),
+    const all: CatalogViewItem[] = [
+      ...GARMENT_CATALOG.map((g, i) => ({
+        name: g.name,
+        category: String(g.category),
+        displayUrl: g.displayUrl,
+        originalIdx: i,
+        isCustom: false,
+      })),
       ...uploadedGarments.map((g, i) => ({
-        name: g.name, category: g.category as any, displayUrl: g.url,
-        originalIdx: GARMENT_CATALOG.length + i, isCustom: true,
-        sizes: [], defaultSpec: {} as any, materialKey: 'cotton' as any, model3dUrl: undefined,
+        name: g.name,
+        category: g.category,
+        displayUrl: g.url,
+        originalIdx: GARMENT_CATALOG.length + i,
+        isCustom: true,
       })),
     ];
     return all.filter(g => {
@@ -166,7 +187,6 @@ export default function TryOnPage() {
         const resolvedScore = typeof score === 'number' ? score : 94;
         setGeneratedImageUrl(response.imageUrl);
         setGeneratedThumbUrl(response.thumbUrl ?? null);
-        setCurrentFitScore(resolvedScore);
         setCompareSlider(50);
         await new Promise(r => setTimeout(r, 200));
         setShowLuxuryResult(true);
@@ -237,7 +257,6 @@ export default function TryOnPage() {
     setGeneratedImageUrl(item.imageUrl);
     setGeneratedThumbUrl(item.thumbUrl);
     setBeforePhotoDisplayUrl(item.beforeImageUrl);
-    setCurrentFitScore(item.fitScore);
     setFitScoreDisplay(0);
     setCompareSlider(50);
     setShowLuxuryResult(true);
@@ -257,6 +276,7 @@ export default function TryOnPage() {
     document.body.appendChild(a);
     a.click();
     a.remove();
+    setActionToast('Render downloaded');
   }, [generatedImageUrl]);
 
   const shareRender = useCallback(async () => {
@@ -265,10 +285,14 @@ export default function TryOnPage() {
     try {
       if (navigator.share) {
         await navigator.share({ title: 'AI-Kart Atelier', text: 'Virtual try-on render', url });
+        setActionToast('Share sheet opened');
       } else {
         await navigator.clipboard.writeText(url);
+        setActionToast('Render URL copied');
       }
-    } catch { /* user cancelled or clipboard denied */ }
+    } catch {
+      setActionToast('Share unavailable');
+    }
   }, [generatedImageUrl]);
 
   const handleFileUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -289,6 +313,29 @@ export default function TryOnPage() {
 
       {/* ── GPU BUSY OVERLAY ──────────────────────────────── */}
       <AnimatePresence>
+        {actionToast && (
+          <motion.div
+            initial={{ opacity: 0, y: -8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -8 }}
+            style={{
+              position: 'fixed',
+              top: 72,
+              right: 24,
+              zIndex: 520,
+              padding: '10px 14px',
+              border: '1px solid rgba(201,168,76,0.4)',
+              background: 'rgba(15, 11, 17, 0.92)',
+              color: 'var(--gold-dim)',
+              letterSpacing: '0.12em',
+              fontSize: 9,
+              textTransform: 'uppercase',
+              fontFamily: 'var(--font-sans)',
+            }}
+          >
+            {actionToast}
+          </motion.div>
+        )}
         {gpuBusy && (
           <motion.div
             initial={{ opacity: 0 }}
@@ -497,7 +544,7 @@ export default function TryOnPage() {
                 <div
                   style={{
                     position: 'absolute',
-                    bottom: 12,
+                    bottom: 44,
                     left: 12,
                     right: 12,
                     display: 'flex',
@@ -827,7 +874,8 @@ export default function TryOnPage() {
                             }}
                             onError={e => {
                               e.currentTarget.style.display = 'none';
-                              (e.currentTarget.nextElementSibling as HTMLElement | null)?.style && ((e.currentTarget.nextElementSibling as HTMLElement).style.display = 'flex');
+                              const sibling = e.currentTarget.nextElementSibling as HTMLElement | null;
+                              if (sibling?.style) sibling.style.display = 'flex';
                             }}
                           />
                           {/* Fallback silhouette */}
