@@ -1,0 +1,9 @@
+
+backend/venv/
+backend/.env
+backend/__pycache__/
+backend/result_cache/
+backend/physical_twin.db
+aikart-app/node_modules/
+aikart-app/.next/
+*.pyc

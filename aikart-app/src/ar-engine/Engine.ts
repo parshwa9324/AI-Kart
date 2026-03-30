@@ -675,14 +675,12 @@ export class Engine {
         if (pose && pose.landmarks) {
           const t = this.overlay.calculate(pose.landmarks, cw, ch, pose.avgConfidence);
           if (t.valid) {
-            // [DEPRECATED FOR PHASE 1 3D TRANSITION]
-            // this.renderer.drawShirt(
-            //   this.overlay.image,
-            //   t.x, t.y, t.width, t.height, t.angle, t.opacity,
-            //   t.parallaxX, t.stretchY
-            // );
+            this.renderer.drawShirt(
+              this.overlay.image,
+              t.x, t.y, t.width, t.height, t.angle, t.opacity,
+              t.parallaxX, t.stretchY
+            );
 
-            // Just update variables to avoid telemetry errors
             currentShoulderDist = t.shoulderDist;
             hasPoseData = true;
           }
@@ -693,12 +691,11 @@ export class Engine {
       if (this.overlay.loaded && this.overlay.image) {
         const t = this.overlay.handleNoPose(isSkipFrame);
         if (t.valid && t.opacity > 0.01) {
-          // [DEPRECATED FOR PHASE 1 3D TRANSITION]
-          // this.renderer.drawShirt(
-          //   this.overlay.image,
-          //   t.x, t.y, t.width, t.height, t.angle, t.opacity,
-          //   t.parallaxX, t.stretchY
-          // );
+          this.renderer.drawShirt(
+            this.overlay.image,
+            t.x, t.y, t.width, t.height, t.angle, t.opacity,
+            t.parallaxX, t.stretchY
+          );
 
           currentShoulderDist = t.shoulderDist;
           hasPoseData = true;
