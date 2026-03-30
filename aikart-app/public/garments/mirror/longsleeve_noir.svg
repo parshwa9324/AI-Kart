@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 480" width="420" height="480">
+  <defs>
+    <linearGradient id="lsGrad" x1="0" y1="0" x2="0.25" y2="1">
+      <stop offset="0%" stop-color="#2c2c2c"/>
+      <stop offset="100%" stop-color="#1e1e1e"/>
+    </linearGradient>
+  </defs>
+  <!-- Body — long sleeves extend further -->
+  <path d="M115 0 L70 15 L0 90 L8 155 L68 110 L62 470 L358 470 L352 110 L412 155 L420 90 L350 15 L305 0 Q270 55 210 60 Q150 55 115 0 Z" fill="url(#lsGrad)" stroke="#111" stroke-width="1.5"/>
+  <!-- Neckline -->
+  <path d="M115 0 Q150 55 210 60 Q270 55 305 0" fill="none" stroke="#0a0a0a" stroke-width="2.5"/>
+  <!-- Center seam -->
+  <line x1="210" y1="60" x2="210" y2="465" stroke="#161616" stroke-width="1" opacity="0.3"/>
+  <!-- Cuffs -->
+  <line x1="0" y1="88" x2="30" y2="130" stroke="#161616" stroke-width="2" opacity="0.4"/>
+  <line x1="420" y1="88" x2="390" y2="130" stroke="#161616" stroke-width="2" opacity="0.4"/>
+  <!-- Fold shadows -->
+  <line x1="140" y1="100" x2="135" y2="465" stroke="#161616" stroke-width="1" opacity="0.15"/>
+  <line x1="280" y1="100" x2="285" y2="465" stroke="#161616" stroke-width="1" opacity="0.15"/>
+</svg>

@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 450" width="400" height="450">
+  <defs>
+    <linearGradient id="navyGrad" x1="0" y1="0" x2="0.2" y2="1">
+      <stop offset="0%" stop-color="#2a3a5c"/>
+      <stop offset="100%" stop-color="#1e2d4a"/>
+    </linearGradient>
+  </defs>
+  <path d="M120 0 L80 10 L0 70 L40 120 L80 90 L80 440 L320 440 L320 90 L360 120 L400 70 L320 10 L280 0 Q250 50 200 50 Q150 50 120 0 Z" fill="url(#navyGrad)" stroke="#162040" stroke-width="1.5"/>
+  <!-- Collar/polo neckline -->
+  <path d="M120 0 Q150 50 200 50 Q250 50 280 0" fill="none" stroke="#12193a" stroke-width="2.5"/>
+  <!-- Placket -->
+  <line x1="200" y1="50" x2="200" y2="130" stroke="#12193a" stroke-width="2" opacity="0.5"/>
+  <circle cx="200" cy="75" r="3" fill="#3a4a6c" stroke="#2a3a5c" stroke-width="1"/>
+  <circle cx="200" cy="100" r="3" fill="#3a4a6c" stroke="#2a3a5c" stroke-width="1"/>
+  <!-- Fold shadows -->
+  <line x1="200" y1="55" x2="200" y2="435" stroke="#162040" stroke-width="1" opacity="0.2"/>
+  <line x1="130" y1="95" x2="135" y2="430" stroke="#162040" stroke-width="1" opacity="0.12"/>
+  <line x1="270" y1="95" x2="265" y2="430" stroke="#162040" stroke-width="1" opacity="0.12"/>
+</svg>

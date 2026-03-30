@@ -299,6 +299,15 @@ export class Engine {
       return;
     }
 
+    // SVG path: load directly via Overlay, skip BackgroundRemover
+    // (SVGs have transparent backgrounds which BackgroundRemover flood-fills and destroys)
+    if (url.toLowerCase().endsWith('.svg')) {
+      if (token !== this.garmentToken) return;
+      if (this.demoMode) console.log(`[AE-Engine] SVG garment — direct load: ${url.split('/').pop()}`);
+      await this.overlay.loadShirt(url);
+      return;
+    }
+
     try {
       const texture = await GarmentLoader.fromUrl(url);
       if (token !== this.garmentToken) {

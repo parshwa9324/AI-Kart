@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 440 500" width="440" height="500">
+  <defs>
+    <linearGradient id="hoodGrad" x1="0" y1="0" x2="0.15" y2="1">
+      <stop offset="0%" stop-color="#e8e0d0"/>
+      <stop offset="100%" stop-color="#d8cebc"/>
+    </linearGradient>
+  </defs>
+  <!-- Body — wider, boxier cut -->
+  <path d="M120 15 L65 30 L0 100 L15 160 L70 120 L60 490 L380 490 L370 120 L425 160 L440 100 L375 30 L320 15 Q280 70 220 75 Q160 70 120 15 Z" fill="url(#hoodGrad)" stroke="#ccc4b2" stroke-width="1.5"/>
+  <!-- Hood -->
+  <path d="M120 15 Q100 -30 160 -35 L220 -20 L280 -35 Q340 -30 320 15" fill="#ddd4c2" stroke="#ccc4b2" stroke-width="1.5"/>
+  <!-- Hood inner edge -->
+  <path d="M140 5 Q160 -15 220 -10 Q280 -15 300 5" fill="none" stroke="#c0b8a5" stroke-width="2"/>
+  <!-- Kangaroo pocket -->
+  <path d="M135 280 L135 370 Q135 385 150 385 L290 385 Q305 385 305 370 L305 280 Q220 310 135 280 Z" fill="none" stroke="#c0b8a5" stroke-width="1.5" opacity="0.5"/>
+  <!-- Center seam -->
+  <line x1="220" y1="75" x2="220" y2="490" stroke="#ccc4b2" stroke-width="1.5" opacity="0.3"/>
+  <!-- Drawstrings -->
+  <line x1="195" y1="15" x2="185" y2="120" stroke="#b8b0a0" stroke-width="1.5" opacity="0.4"/>
+  <line x1="245" y1="15" x2="255" y2="120" stroke="#b8b0a0" stroke-width="1.5" opacity="0.4"/>
+  <!-- Fold shadows -->
+  <line x1="140" y1="130" x2="135" y2="480" stroke="#ccc4b2" stroke-width="1" opacity="0.15"/>
+  <line x1="300" y1="130" x2="305" y2="480" stroke="#ccc4b2" stroke-width="1" opacity="0.15"/>
+</svg>
