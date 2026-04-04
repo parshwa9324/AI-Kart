@@ -83,9 +83,9 @@ export class Overlay {
   private lastShoulderDist = 0;
 
   // Tuning
-  private readonly WIDTH_MULT = 1.55;
-  private readonly HEIGHT_RATIO = 1.25;
-  private readonly Y_OFFSET_FRAC = 0.10;
+  private readonly WIDTH_MULT = 1.35;
+  private readonly HEIGHT_RATIO = 1.20;
+  private readonly Y_OFFSET_FRAC = 0.05;
   private readonly ANGLE_SMOOTH = 0.15;  // heavy — separate from position
 
   get loaded(): boolean { return this._loaded; }
@@ -258,7 +258,7 @@ export class Overlay {
     _result.width = this.sW;
     _result.height = this.sH;
     _result.angle = this.sAngle;
-    _result.opacity = this.fadeIn * 0.92;
+    _result.opacity = this.fadeIn * 0.96;
     _result.valid = true;
     _result.parallaxX = parallax;
     _result.stretchY = stretch;

@@ -89,6 +89,8 @@ export class Engine {
   private glbAnimMixer: import('three').AnimationMixer | null = null;
   private _glbOffscreenCanvas: HTMLCanvasElement | null = null;
   private _glbThreeScene: import('three').Scene | null = null;
+  /** True while a GLB is being fetched/parsed — prevents fallback 2D path running. */
+  private _glbLoading = false;
   private devMode: boolean;
 
   // Auto-throttle
@@ -339,6 +341,7 @@ export class Engine {
    * onto the main AR canvas each frame via drawImage.
    */
   private async loadGlbGarment(url: string, token: number): Promise<void> {
+    this._glbLoading = true;
     try {
       // Dynamic import to avoid bundling Three.js into the main chunk
       const [THREE, { GLTFLoader }] = await Promise.all([
@@ -390,11 +393,24 @@ export class Engine {
         gltf.animations.forEach(clip => this.glbAnimMixer!.clipAction(clip).play());
       }
 
-      // Center garment at world origin
+      // Normalize model scale so it fits in a ~1-unit bounding box regardless of
+      // the GLB's original export scale. This prevents the model being invisible
+      // because it's 0.001 units or 100 units tall.
+      const rawBox = new THREE.Box3().setFromObject(gltf.scene);
+      const rawSize = rawBox.getSize(new THREE.Vector3());
+      const maxDim = Math.max(rawSize.x, rawSize.y, rawSize.z);
+      if (maxDim > 0) {
+        const normalizeScale = 1.2 / maxDim; // target ~1.2 units tall
+        gltf.scene.scale.setScalar(normalizeScale);
+      }
+
+      // Re-compute box after scale, center at origin
       const box = new THREE.Box3().setFromObject(gltf.scene);
       const center = box.getCenter(new THREE.Vector3());
       gltf.scene.position.sub(center);
-      gltf.scene.position.y -= box.getSize(new THREE.Vector3()).y * 0.3;
+      // Shift down so torso center sits at y=0 (camera looks at y=1.2, so garment
+      // needs to be near there — shoulder tracking in the render loop will fine-tune)
+      gltf.scene.position.y -= box.getSize(new THREE.Vector3()).y * 0.1;
 
       scene.add(gltf.scene);
 
@@ -402,14 +418,31 @@ export class Engine {
       this._glbOffscreenCanvas = offscreen;
       this._glbThreeScene = scene;
 
-      if (this.devMode) console.log('[AR Engine] GLB loaded:', url);
+      if (this.devMode) {
+        console.log('[AR Engine] GLB loaded:', url);
+        // Skeleton inspection — tells us whether bone-based tracking is possible
+        let skinnedCount = 0;
+        gltf.scene.traverse((child) => {
+          const sm = child as import('three').SkinnedMesh;
+          if (sm.isSkinnedMesh) {
+            skinnedCount++;
+            console.log('[AR Engine] SkinnedMesh:', sm.name,
+              '| Bones:', sm.skeleton?.bones?.map((b: import('three').Bone) => b.name));
+          }
+        });
+        if (skinnedCount === 0) {
+          console.warn('[AR Engine] No skeleton found in GLB — Phase 3 bone tracking unavailable. Use Mixamo to rig.');
+        }
+      }
 
     } catch (err) {
-      console.warn('[AR Engine] GLB load failed, falling back to 2D overlay:', err);
-      // Fallback: try as 2D image (handles wrong extension)
+      console.error('[AR Engine] GLB load failed:', err);
+      // Fallback: try as 2D image (handles wrong extension or corrupt GLB)
       if (token === this.garmentToken) {
         await this.overlay.loadShirt(url);
       }
+    } finally {
+      this._glbLoading = false;
     }
   }
 
@@ -431,6 +464,7 @@ export class Engine {
     this.glbAnimMixer = null;
     this._glbOffscreenCanvas = null;
     this._glbThreeScene = null;
+    this._glbLoading = false;
 
     if (clearCanvas) {
       this.renderer.clear();
@@ -632,16 +666,44 @@ export class Engine {
       // If a GLB garment is loaded, tick animation mixer, render Three.js scene,
       // and composite the offscreen canvas over the AR camera feed.
       if (this.glbRenderer && this.glbCamera && this._glbThreeScene && this._glbOffscreenCanvas) {
+        // Resize offscreen canvas to match main canvas (handles init-time 0x0 issue,
+        // and any dynamic resize after camera stream starts).
+        if (cw > 0 && ch > 0 &&
+            (this._glbOffscreenCanvas.width !== cw || this._glbOffscreenCanvas.height !== ch)) {
+          this._glbOffscreenCanvas.width = cw;
+          this._glbOffscreenCanvas.height = ch;
+          this.glbRenderer.setSize(cw, ch);
+          this.glbCamera.aspect = cw / ch;
+          this.glbCamera.updateProjectionMatrix();
+          if (this.devMode) console.log(`[AR Engine] GLB offscreen resized to ${cw}x${ch}`);
+        }
+
         // Adjust camera to track shoulder position in world space
         if (poseMeshInput) {
           const shoulderMidXNorm = ((poseMeshInput.leftShoulder.x + poseMeshInput.rightShoulder.x) / 2) / cw;
           const shoulderMidYNorm = ((poseMeshInput.leftShoulder.y + poseMeshInput.rightShoulder.y) / 2) / ch;
-          // Map canvas coords → subtle camera pan (±0.5 units)
-          this.glbCamera.position.x = (shoulderMidXNorm - 0.5) * -1.0;
-          this.glbCamera.position.y = 1.2 - (shoulderMidYNorm - 0.35) * 1.5;
-          // Yaw: rotate garment model to match body yaw angle
+
+          // Scale garment based on shoulder width (larger person = bigger garment)
+          const shoulderDist = Math.abs(poseMeshInput.leftShoulder.x - poseMeshInput.rightShoulder.x);
+          const expectedShoulderDist = cw * 0.28; // ~28% of canvas width = neutral scale
+          const scaleFromShoulder = Math.max(0.5, Math.min(2.5, shoulderDist / expectedShoulderDist));
+          if (this.glbScene) {
+            this.glbScene.scale.setScalar(scaleFromShoulder);
+          }
+
+          // Camera pan: map shoulder midpoint to camera X, shoulder Y to camera Y
+          this.glbCamera.position.x = (shoulderMidXNorm - 0.5) * -1.2;
+          this.glbCamera.position.y = 1.2 - (shoulderMidYNorm - 0.35) * 1.8;
+
+          // Yaw: rotate garment to match body yaw
           if (this.glbScene && poseMeshInput.bodyYawAngle !== undefined) {
             this.glbScene.rotation.y = poseMeshInput.bodyYawAngle ?? 0;
+          }
+
+          // Torso tilt (Z-axis lean)
+          if (this.glbScene && poseMeshInput.torsoPitchScale !== undefined) {
+            // torsoPitchScale > 1 = leaning forward, < 1 = leaning back
+            this.glbScene.rotation.z = (1.0 - poseMeshInput.torsoPitchScale) * 0.3;
           }
         }
 
@@ -654,8 +716,10 @@ export class Engine {
         // Render Three.js scene to offscreen canvas
         this.glbRenderer.render(this._glbThreeScene, this.glbCamera);
 
-        // Composite: drawImage offscreen Three.js frame onto AR canvas
-        const ctx2d = this.config.canvas.getContext('2d');
+        // Composite: drawImage offscreen Three.js frame onto AR canvas.
+        // Use renderer.getContext() — it holds the live CanvasRenderingContext2D.
+        // canvas.getContext('2d') can return null if called a second time in some browsers.
+        const ctx2d = this.renderer.getContext() as CanvasRenderingContext2D | null;
         if (ctx2d) {
           ctx2d.globalAlpha = 0.92;
           ctx2d.drawImage(this._glbOffscreenCanvas, 0, 0, cw, ch);
@@ -670,8 +734,8 @@ export class Engine {
       // Record performance
       this.rafId = requestAnimationFrame(this.loop);
 
-      if (!usedMeshWarp && this.overlay.loaded && this.overlay.image) {
-        // ─── FALLBACK SIMPLE PATH ───
+      if (!usedMeshWarp && !this._glbLoading && this.overlay.loaded && this.overlay.image) {
+        // ─── FALLBACK SIMPLE PATH ─── (skipped while GLB is loading / when GLB active)
         if (pose && pose.landmarks) {
           const t = this.overlay.calculate(pose.landmarks, cw, ch, pose.avgConfidence);
           if (t.valid) {

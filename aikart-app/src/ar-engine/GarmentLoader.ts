@@ -60,9 +60,25 @@ export class GarmentLoader {
     bgRemovalOpts?: RemovalOptions
   ): GarmentTexture {
     const hadAlpha = BackgroundRemover.hasAlpha(img);
-    // Always run BackgroundRemover to obliterate baked-in checkerboards, 
-    // even if the image technically has an alpha channel (fake transparent PNGs).
-    let canvas: HTMLCanvasElement | OffscreenCanvas = BackgroundRemover.remove(img, bgRemovalOpts);
+
+    let canvas: HTMLCanvasElement | OffscreenCanvas;
+
+    if (hadAlpha) {
+      // Image already has meaningful transparency — skip BackgroundRemover entirely.
+      // Running removal on transparent PNGs flood-fills from corners and destroys garment pixels.
+      const w = img.naturalWidth;
+      const h = img.naturalHeight;
+      const c = document.createElement('canvas');
+      c.width = w;
+      c.height = h;
+      const ctx = c.getContext('2d')!;
+      ctx.drawImage(img, 0, 0, w, h);
+      canvas = c;
+      console.log(`[GarmentLoader] Image has alpha — skipped BackgroundRemover (${w}x${h})`);
+    } else {
+      // Opaque image — run BackgroundRemover to strip background
+      canvas = BackgroundRemover.remove(img, bgRemovalOpts);
+    }
 
     // Phase 6: Cast to HTMLCanvasElement for Analyzer (compatible via CanvasImageSource)
     // Analyzer uses drawImage, so OffscreenCanvas is fine.

@@ -43,50 +43,74 @@ interface MirrorGarment {
   readonly name: string;
   readonly maison: string;
   readonly url: string;
+  /** For GLB entries: a PNG/JPG to show in the carousel thumbnail. */
+  readonly thumbnailUrl?: string;
   readonly category: string;
+  /** True when url is a .glb/.gltf — activates the 3D badge. */
+  readonly is3D?: boolean;
 }
 
 const MIRROR_GARMENTS: readonly MirrorGarment[] = [
+  // ── 3D Mesh Garments ─────────────────────────────────
+  {
+    id: 'jacket-3d',
+    name: 'Casual Jacket',
+    maison: '3D Mesh',
+    url: '/garments/3d-assets/free_lowpoly_jacket.glb',
+    thumbnailUrl: '/garments/mirror/jacket_black_clean.png',
+    category: 'Outerwear',
+    is3D: true,
+  },
+  {
+    id: 'tshirt-3d',
+    name: 'Classic Tee',
+    maison: '3D Mesh',
+    url: '/garments/3d-assets/short_sleeve_t-_shirt.glb',
+    thumbnailUrl: '/garments/mirror/tshirt_white_clean.png',
+    category: 'Essentials',
+    is3D: true,
+  },
+  // ── 2D Overlay Garments ───────────────────────────────
   {
     id: 'noir-blazer',
     name: 'Noir Blazer',
     maison: 'Structured Wool',
-    url: '/garments/mirror/blazer_noir.svg',
+    url: '/garments/mirror/jacket_black_clean.png',
     category: 'Tailoring',
   },
   {
     id: 'blanc-tee',
     name: 'Blanc Essentiel',
     maison: 'Egyptian Cotton',
-    url: '/garments/mirror/tee_blanc.svg',
+    url: '/garments/mirror/tshirt_white_clean.png',
     category: 'Essentials',
   },
   {
     id: 'ivoire-knit',
     name: 'Ivoire Maille',
     maison: 'Cashmere Blend',
-    url: '/garments/mirror/sweater_ivoire.svg',
+    url: '/garments/mirror/sweater_white_clean.png',
     category: 'Knitwear',
   },
   {
     id: 'atelier-hood',
     name: 'Atelier Hood',
     maison: 'French Terry',
-    url: '/garments/mirror/hoodie_atelier.svg',
+    url: '/garments/mirror/hoodie_white_clean.png',
     category: 'Casual Luxe',
   },
   {
     id: 'noir-longue',
     name: 'Noir Longue',
     maison: 'Stretch Jersey',
-    url: '/garments/mirror/longsleeve_noir.svg',
+    url: '/garments/mirror/tshirt_black_long_clean.png',
     category: 'Essentials',
   },
   {
-    id: 'marine-polo',
-    name: 'Marine Polo',
-    maison: 'Piqué Cotton',
-    url: '/garments/mirror/polo_marine.svg',
+    id: 'court-tee',
+    name: 'Court Tee',
+    maison: 'Silk Touch Cotton',
+    url: '/garments/mirror/tee_short_white_clean.png',
     category: 'Essentials',
   },
 ] as const;
@@ -318,6 +342,10 @@ function GarmentCard({
   isLoading: boolean;
   onSelect: () => void;
 }) {
+  // For GLB garments, show the thumbnailUrl in the carousel; fall back to url only for images
+  const imgSrc = garment.thumbnailUrl ?? garment.url;
+  const showImg = !garment.is3D || !!garment.thumbnailUrl;
+
   return (
     <motion.button
       onClick={onSelect}
@@ -341,17 +369,41 @@ function GarmentCard({
         className="relative w-16 h-20 md:w-20 md:h-24 overflow-hidden flex items-center justify-center"
         style={{ background: 'var(--surface-container)' }}
       >
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img
-          src={garment.url}
-          alt={garment.name}
-          className="w-full h-full object-contain"
-          style={{
-            filter: isSelected ? 'brightness(1.1)' : 'brightness(0.85)',
-            transition: 'filter 0.3s',
-          }}
-          loading="eager"
-        />
+        {showImg ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={imgSrc}
+            alt={garment.name}
+            className="w-full h-full object-contain"
+            style={{
+              filter: isSelected ? 'brightness(1.1)' : 'brightness(0.85)',
+              transition: 'filter 0.3s',
+            }}
+            loading="eager"
+          />
+        ) : (
+          /* Fallback for 3D garments without a thumbnailUrl */
+          <div
+            className="flex items-center justify-center w-full h-full text-2xl"
+            style={{ color: 'var(--gold-dim)' }}
+          >
+            ◈
+          </div>
+        )}
+
+        {/* 3D badge — top-right corner */}
+        {garment.is3D && (
+          <div
+            className="absolute top-1 right-1 px-1 text-[9px] font-mono font-bold leading-none"
+            style={{
+              background: 'var(--gold)',
+              color: 'var(--background)',
+              letterSpacing: '0.05em',
+            }}
+          >
+            3D
+          </div>
+        )}
 
         {/* Loading shimmer */}
         {isLoading && (
